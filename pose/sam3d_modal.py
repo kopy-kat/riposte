@@ -23,7 +23,7 @@ image = (
     )
     # Modal's Python was built with clang, so extension builds look for clang++; the builder has no GPU,
     # so name the architectures of the GPUs we accept for detectron2's CUDA kernels.
-    .env({"CC": "gcc", "CXX": "g++", "FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9"})
+    .env({"CC": "gcc", "CXX": "g++", "FORCE_CUDA": "1", "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9;9.0"})
     .run_commands(
         "pip install 'git+https://github.com/facebookresearch/detectron2.git@a1ce2f9' --no-build-isolation --no-deps",
         "pip install git+https://github.com/microsoft/MoGe.git",
@@ -57,7 +57,7 @@ def frames(video: str, start: int, stop: int, stride: int):
             yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-@app.cls(gpu=["L4", "A10G", "A100-40GB"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")],
+@app.cls(gpu=["L4", "A10G", "L40S", "A100-40GB", "A100-80GB", "H100"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")],
          timeout=1800, max_containers=10)
 class Sam3D:
     @modal.enter()
