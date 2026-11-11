@@ -4,6 +4,7 @@
 """
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -71,7 +72,7 @@ def en_garde(p, hold_s=3.0):
     return np.nanmean(p["pose"][m], axis=0)
 
 
-def run_fold(takes, folds, k, epochs, device, seed=0, log=print):
+def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     splits = [split(p, folds, k) for p in takes]
@@ -108,13 +109,15 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print):
 
     net.eval()
     res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "model")}
-    for p, x, (_, (a, b)) in zip(takes, xs, splits):
+    for i, (p, x, (_, (a, b))) in enumerate(zip(takes, xs, splits)):
         if b - a < WIN:
             continue
         true, v = p["pose"][a:b], p["valid"][a:b]
         preds = {"mean pose": np.broadcast_to(mean_pose, true.shape),
                  "en garde": np.broadcast_to(en_garde(p), true.shape),
                  "model": predict(net, x, a, b, device)}
+        if held_out is not None:
+            held_out[i][a:b] = preds["model"]
         for name, pr in preds.items():
             for g, j in GROUPS.items():
                 res[name][g].append((mpjpe(pr, true, v, j), int(v.sum())))
@@ -134,6 +137,7 @@ def main():
     ap.add_argument("takes", nargs="+", help="watch_path,npz_path[,offset_s]")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--epochs", type=int, default=150)
+    ap.add_argument("--out", help="write each take's held-out predictions to <npz stem>.watchpose.npz in this dir")
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     a = ap.parse_args()
     takes = []
@@ -143,8 +147,14 @@ def main():
         print(f"{n}: offset {p['offset']:.3f} s (coarse {p['coarse']:.3f}), corr {p['peak']:.2f}, "
               f"{len(p['t']) / RATE:.1f} s overlap, {p['valid'].mean():.0%} valid")
         takes.append(p)
-    results = [run_fold(takes, a.folds, k, a.epochs, a.device) for k in range(a.folds)]
+    held_out = [np.full_like(p["pose"], np.nan) for p in takes]
+    results = [run_fold(takes, a.folds, k, a.epochs, a.device, held_out=held_out) for k in range(a.folds)]
     report(results)
+    if a.out:
+        for spec, p, pred in zip(a.takes, takes, held_out):
+            out = Path(a.out) / (Path(spec.split(",")[1]).name.removesuffix(".sam3d.npz") + ".watchpose.npz")
+            np.savez(out, t=p["t"], pose=pred, R=p["R"], offset=p["offset"])
+            print(out)
 
 
 if __name__ == "__main__":

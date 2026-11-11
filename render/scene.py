@@ -88,6 +88,10 @@ n = s["trail_frames"]
 trail_faces = [(i, i + 1, n + i + 1, n + i) for i in range(n - 1)]
 cached_mesh("trail", s["trail_rest"], trail_faces, "trail.pc2", material("trail", (1.0, 0.35, 0.1), 0.9, 6.0))
 
+if "skeleton_rest" in s:
+    cached_mesh("skeleton", s["skeleton_rest"], s["skeleton_faces"], "skeleton.pc2",
+                material("skeleton", (0.1, 1.0, 0.3), 0.95, 1.0))
+
 if video:
     clip = bpy.data.movieclips.load(str(video))
     cam_data.show_background_images = True

@@ -70,7 +70,7 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     offset: watch time of video t=0, if known; otherwise tap vs forearm peak. Either way it is then refined.
     Returns a dict: t (T,) watch seconds; imu (T, 9) gyro rad/s, user accel g, gravity g, all in the watch
     frame; pose (T, J, 3) metres, pelvis-relative in the heading frame; root (T, 3) pelvis in the heading
-    frame; valid (T,) pose present; offset, coarse, peak (correlation at the chosen offset); tap (watch
+    frame; R heading-frame rotation (camera -> heading); valid (T,) pose present; offset, coarse, peak (correlation at the chosen offset); tap (watch
     seconds).
     """
     df = load_sensor_logger(watch_path)
@@ -108,7 +108,7 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     pose = (kp_t - pelvis[:, None]) @ R.T
     root = pelvis @ R.T
     return dict(t=t, imu=imu.astype(np.float32), pose=pose.astype(np.float32), root=root.astype(np.float32),
-                valid=valid, offset=off, coarse=coarse, peak=peak, tap=find_tap(df))
+                R=R, valid=valid, offset=off, coarse=coarse, peak=peak, tap=find_tap(df))
 
 
 if __name__ == "__main__":

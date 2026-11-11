@@ -17,6 +17,10 @@ KP = {"right_elbow": 8, "left_elbow": 7, "right_wrist": 41, "left_wrist": 62,
 BLADE_M = 0.90
 GRIP_M = 0.10
 TRAIL_FRAMES = 12
+# Bones over model.pairs.JOINTS indices (MHR70 0-20, then right wrist 21, left wrist 22).
+BONES = [(0, 5), (0, 6), (5, 6), (5, 7), (7, 22), (6, 8), (8, 21), (5, 9), (6, 10), (9, 10), (9, 11), (11, 13),
+         (10, 12), (12, 14), (13, 15), (13, 17), (14, 18), (14, 20)]
+BONE_M = 0.012
 
 
 def to_blender(p):
@@ -49,6 +53,7 @@ def main():
     ap.add_argument("npz")
     ap.add_argument("--hand", default="right", choices=["right", "left"])
     ap.add_argument("--watch", default=None, help="Sensor Logger dir: blade orientation from the watch attitude")
+    ap.add_argument("--watch-pose", default=None, help="model.train --out predictions: draw them as a skeleton")
     ap.add_argument("--offset", type=float, default=None, help="watch time of video t=0")
     args = ap.parse_args()
 
@@ -94,6 +99,21 @@ def main():
     trail = np.concatenate([hist + across * width, hist - across * width], axis=1)
     write_pc2(out / "trail.pc2", to_blender(trail), fps)
 
+    if args.watch_pose:
+        w = np.load(args.watch_pose)
+        tw = np.arange(n) / fps + float(w["offset"])
+        flat = w["pose"].reshape(len(w["t"]), -1)
+        flat = np.stack([np.interp(tw, w["t"], flat[:, k]) for k in range(flat.shape[1])], 1)
+        # The watch gives the pose about the pelvis; where the pelvis is comes from the video.
+        joints = flat.reshape(n, -1, 3) @ w["R"]
+        pelvis = (kps[:, 9] + kps[:, 10]) / 2
+        joints = fill_gaps(joints.astype(np.float32)) + pelvis[:, None]
+        a, b = joints[:, [i for i, _ in BONES]], joints[:, [j for _, j in BONES]]
+        across = np.cross(b - a, (a + b) / 2)
+        across = across / (np.linalg.norm(across, axis=-1, keepdims=True) + 1e-9) * BONE_M
+        skel = np.stack([a + across, a - across, b - across, b + across], 2).reshape(n, -1, 3)
+        write_pc2(out / "skeleton.pc2", to_blender(skel), fps)
+
     K = d["cam_int"].reshape(-1, 3, 3)[0]
     scene = {
         "fps": fps,
@@ -105,6 +125,9 @@ def main():
         "trail_rest": to_blender(trail[0]).tolist(),
         "trail_frames": TRAIL_FRAMES,
     }
+    if args.watch_pose:
+        scene["skeleton_rest"] = to_blender(skel[0]).tolist()
+        scene["skeleton_faces"] = [(4 * k, 4 * k + 1, 4 * k + 2, 4 * k + 3) for k in range(len(BONES))]
     (out / "scene.json").write_text(json.dumps(scene))
     print(out)
 
