@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from scipy.spatial.transform import Rotation
 from torch import nn
 
 from model.pairs import ARM, JOINTS, LEGS, RATE, pair
@@ -66,13 +67,30 @@ def predict(net, x, lo, hi, device):
     return acc / n[:, None, None]
 
 
+def knn(xs, items, ys, x, lo, hi, k=5):
+    """Per-frame prediction over [lo, hi): the mean pose sequence of the k training windows nearest in
+    normalised IMU, averaged over overlapping windows like predict."""
+    tx = np.stack([xs[i][s:s + WIN].ravel() for i, s in items])
+    ty = np.stack([ys[i][s:s + WIN] for i, s in items])
+    starts = list(range(lo, hi - WIN + 1, STRIDE))
+    if starts[-1] != hi - WIN:
+        starts.append(hi - WIN)
+    acc = np.zeros((hi - lo, *ty.shape[2:]))
+    n = np.zeros(hi - lo)
+    for s in starts:
+        near = np.argsort(((tx - x[s:s + WIN].ravel()) ** 2).sum(1))[:k]
+        acc[s - lo:s - lo + WIN] += ty[near].mean(0)
+        n[s - lo:s - lo + WIN] += 1
+    return acc / n[:, None, None]
+
+
 def en_garde(p, hold_s=3.0):
     """Mean pose over the hold that follows the start tap."""
     m = (p["t"] >= p["tap"] + 0.5) & (p["t"] < p["tap"] + 0.5 + hold_s) & p["valid"]
     return np.nanmean(p["pose"][m], axis=0)
 
 
-def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None):
+def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, rot_deg=15.0):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     splits = [split(p, folds, k) for p in takes]
@@ -86,6 +104,7 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None):
     mean_pose = np.nanmean(np.concatenate([takes[i]["pose"][f] for i, f in frames]), axis=0)
 
     xs = [((p["imu"] - mu) / sd).astype(np.float32) for p in takes]
+    mu_t, sd_t = torch.as_tensor(mu, device=device), torch.as_tensor(sd, device=device)
     ys = [np.nan_to_num(p["pose"]).astype(np.float32) for p in takes]
 
     net = Net(xs[0].shape[1], len(JOINTS), mean_pose).to(device)
@@ -95,10 +114,14 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None):
         order = rng.permutation(len(items))
         for b in range(0, len(order), 32):
             batch = [items[j] for j in order[b:b + 32]]
-            x = torch.as_tensor(np.stack([xs[i][s:s + WIN] for i, s in batch]), device=device)
+            x = torch.as_tensor(np.stack([takes[i]["imu"][s:s + WIN] for i, s in batch]), device=device)
             y = torch.as_tensor(np.stack([ys[i][s:s + WIN] for i, s in batch]), device=device)
             m = torch.as_tensor(np.stack([takes[i]["valid"][s:s + WIN] for i, s in batch]), device=device)
-            x = x + 0.05 * torch.randn_like(x)
+            # One random rotation per window on gyro, accel and gravity alike: a different strap placement.
+            rot = Rotation.from_rotvec(rng.normal(size=(len(batch), 3)) * np.deg2rad(rot_deg) / np.sqrt(3))
+            rot = torch.as_tensor(rot.as_matrix(), dtype=torch.float32, device=device)
+            x = (x.unflatten(-1, (3, 3)) @ rot.transpose(1, 2)[:, None]).flatten(-2)
+            x = (x - mu_t) / sd_t + 0.05 * torch.randn_like(x)
             err = (net(x) - y).norm(dim=-1).mean(-1)
             loss = (err * m).sum() / m.sum()
             opt.zero_grad()
@@ -108,13 +131,14 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None):
             log(f"  fold {k} epoch {ep + 1}: train MPJPE {1000 * loss.item():.0f} mm")
 
     net.eval()
-    res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "model")}
+    res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "knn", "model")}
     for i, (p, x, (_, (a, b))) in enumerate(zip(takes, xs, splits)):
         if b - a < WIN:
             continue
         true, v = p["pose"][a:b], p["valid"][a:b]
         preds = {"mean pose": np.broadcast_to(mean_pose, true.shape),
                  "en garde": np.broadcast_to(en_garde(p), true.shape),
+                 "knn": knn(xs, items, ys, x, a, b),
                  "model": predict(net, x, a, b, device)}
         if held_out is not None:
             held_out[i][a:b] = preds["model"]
