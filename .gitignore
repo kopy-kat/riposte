@@ -1,0 +1,8 @@
+data/
+*.mp4
+*.mov
+*.pkl
+*.npz
+.DS_Store
+__pycache__/
+.venv/
