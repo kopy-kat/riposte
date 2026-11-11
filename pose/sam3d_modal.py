@@ -1,7 +1,7 @@
 """Video -> per-frame SAM 3D Body (MHR) reconstruction on Modal.
 
     modal run pose/sam3d_modal.py --video data/raw/stock/1zDKDT-_p9U.mp4
-writes data/processed/<stem>.sam3d.npz next to the repo root.
+writes data/processed/<parent dir>_<stem>.sam3d.npz.
 """
 
 import io
@@ -29,6 +29,8 @@ image = (
         "pip install git+https://github.com/microsoft/MoGe.git",
         f"git clone https://github.com/facebookresearch/sam-3d-body.git /sam3d && cd /sam3d && git checkout {SAM3D_COMMIT}",
     )
+    # setuptools 81 dropped pkg_resources, which detectron2's import chain still uses.
+    .pip_install("setuptools<81")
     .env({"HF_HOME": "/cache/hf", "PYOPENGL_PLATFORM": "egl"})
 )
 
@@ -101,6 +103,6 @@ class Sam3D:
 @app.local_entrypoint()
 def main(video: str, stride: int = 1):
     src = Path(video)
-    out = Path(__file__).resolve().parents[1] / "data/processed" / f"{src.stem}.sam3d.npz"
+    out = Path(__file__).resolve().parents[1] / "data/processed" / f"{src.parent.name}_{src.stem}.sam3d.npz"
     out.write_bytes(Sam3D().run.remote(src.read_bytes(), stride))
     print(out)

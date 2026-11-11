@@ -79,8 +79,13 @@ def main():
     # Tip trail: ribbon over the last TRAIL_FRAMES tip positions, oldest first.
     n = len(tip)
     hist = np.stack([tip[np.clip(np.arange(n) - k, 0, None)] for k in range(TRAIL_FRAMES - 1, -1, -1)], axis=1)
-    width = np.linspace(0.001, 0.012, TRAIL_FRAMES, dtype=np.float32)[None, :, None]
-    trail = np.concatenate([hist + up[:, None] / 0.004 * width, hist - up[:, None] / 0.004 * width], axis=1)
+    width = np.linspace(0.002, 0.03, TRAIL_FRAMES, dtype=np.float32)[None, :, None]
+    # Widen across both the path and the line of sight so the ribbon always faces the camera
+    # (the camera sits at the origin); a fixed offset direction goes edge-on and vanishes.
+    along = np.gradient(hist, axis=1)
+    across = np.cross(along, hist)
+    across /= np.linalg.norm(across, axis=-1, keepdims=True) + 1e-9
+    trail = np.concatenate([hist + across * width, hist - across * width], axis=1)
     write_pc2(out / "trail.pc2", to_blender(trail), fps)
 
     K = d["cam_int"].reshape(-1, 3, 3)[0]

@@ -1,7 +1,9 @@
 """Builds and renders the overlay scene headless.
 
-    /Applications/Blender.app/Contents/MacOS/Blender -b -P render/scene.py -- <take dir> <width> <height>
+    /Applications/Blender.app/Contents/MacOS/Blender -b -P render/scene.py -- <take dir> <width> <height> [last frame]
 renders RGBA frames to <take dir>/frames/, then composite.sh lays them over the video.
+    ... -- <take dir> <width> <height> --blend <video>
+instead saves <take dir>/scene.blend with the video as the camera background, for viewing in Blender.
 """
 
 import json
@@ -10,13 +12,19 @@ from pathlib import Path
 
 import bpy
 
-take, width, height = Path(sys.argv[sys.argv.index("--") + 1]), *map(int, sys.argv[sys.argv.index("--") + 2:][:2])
+args = sys.argv[sys.argv.index("--") + 1:]
+video = None
+if "--blend" in args:
+    video = Path(args[args.index("--blend") + 1]).resolve()
+    args = args[:args.index("--blend")]
+take, width, height = Path(args[0]).resolve(), int(args[1]), int(args[2])
+last = int(args[3]) if len(args) > 3 else None
 s = json.loads((take / "scene.json").read_text())
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.render.fps = round(s["fps"])
-scene.frame_start, scene.frame_end = 1, s["frames"]
+scene.frame_start, scene.frame_end = 1, last or s["frames"]
 scene.render.resolution_x, scene.render.resolution_y = width, height
 scene.render.film_transparent = True
 scene.render.image_settings.file_format = "PNG"
@@ -82,4 +90,13 @@ n = s["trail_frames"]
 trail_faces = [(i, i + 1, n + i + 1, n + i) for i in range(n - 1)]
 cached_mesh("trail", s["trail_rest"], trail_faces, "trail.pc2", material("trail", (1.0, 0.35, 0.1), 0.9, 6.0))
 
-bpy.ops.render.render(animation=True)
+if video:
+    clip = bpy.data.movieclips.load(str(video))
+    cam_data.show_background_images = True
+    bg = cam_data.background_images.new()
+    bg.source = "MOVIE_CLIP"
+    bg.clip = clip
+    bg.alpha = 1.0
+    bpy.ops.wm.save_as_mainfile(filepath=str(take / "scene.blend"))
+else:
+    bpy.ops.render.render(animation=True)
