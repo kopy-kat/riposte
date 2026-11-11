@@ -44,23 +44,17 @@ KEYS = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_
 CHUNK = 240  # processed frames per GPU call; about 4 minutes each
 
 
-def frames(video: bytes, start: int, stop: int, stride: int):
-    import tempfile
-
+def frames(video: str, start: int, stop: int, stride: int):
     import cv2
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
-        f.write(video)
-        f.flush()
-        cap = cv2.VideoCapture(f.name)
-        i = -1
-        while True:
-            ok, bgr = cap.read()
-            if not ok or i + 1 >= stop:
-                break
-            i += 1
-            if i >= start and i % stride == 0:
-                yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    # Decode from the start: CAP_PROP_POS_FRAMES seeks are not frame-accurate on H.264.
+    cap = cv2.VideoCapture(video)
+    for i in range(stop):
+        ok, bgr = cap.read()
+        if not ok:
+            break
+        if i >= start and i % stride == 0:
+            yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 @app.cls(gpu=["L4", "A10G", "A100-40GB"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")],
@@ -76,26 +70,23 @@ class Sam3D:
         self.est = setup_sam_3d_body(hf_repo_id="facebook/sam-3d-body-dinov3", detector_name="vitdet", fov_name="moge2")
 
     @modal.method()
-    def intrinsics(self, video: bytes):
+    def intrinsics(self, video: str):
         # One intrinsics estimate for the whole take: the camera is static, and per-frame or per-chunk
         # FOV estimates would make the body's depth wobble.
-        import tempfile
-
         import cv2
 
+        cache.reload()
         rgb = next(frames(video, 0, 1, 1))
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
-            f.write(video)
-            f.flush()
-            cap = cv2.VideoCapture(f.name)
-            n, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS)
+        cap = cv2.VideoCapture(video)
+        n, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS)
         return self.est.fov_estimator.get_cam_intrinsics(rgb).cpu().numpy(), n, fps, self.est.faces
 
     @modal.method()
-    def chunk(self, video: bytes, start: int, stop: int, stride: int, cam_int) -> list:
+    def chunk(self, video: str, start: int, stop: int, stride: int, cam_int) -> list:
         import numpy as np
         import torch
 
+        cache.reload()
         K = torch.as_tensor(cam_int).cuda()
         out = []
         # Detect every frame: reusing a box between detections shifts the crop, and the crop sets depth.
@@ -128,7 +119,11 @@ def merge(chunks: list, cam_int, faces, fps: float, stride: int) -> bytes:
 def main(video: str, stride: int = 1):
     src = Path(video)
     out = Path(__file__).resolve().parents[1] / "data/processed" / f"{src.parent.name}_{src.stem}.sam3d.npz"
-    data = src.read_bytes()
+    # Upload once to the volume; passing the bytes to every chunk call re-uploads the whole video per chunk.
+    remote = f"/videos/{src.parent.name}_{src.name}"
+    with cache.batch_upload(force=True) as up:
+        up.put_file(str(src), remote)
+    data = "/cache" + remote
     cam_int, n, fps, faces = Sam3D().intrinsics.remote(data)
     span = CHUNK * stride
     bounds = [(a, min(a + span, n)) for a in range(0, n, span)]
