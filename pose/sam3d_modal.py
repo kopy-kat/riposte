@@ -42,7 +42,6 @@ KEYS = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_
         "global_rot", "body_pose_params", "hand_pose_params", "scale_params", "shape_params",
         "pred_joint_coords", "pred_global_rots", "mhr_model_params"]
 CHUNK = 240  # processed frames per GPU call; about 4 minutes each
-REDETECT = 15  # run the person detector every this many frames, else reuse the last box
 
 
 def frames(video: bytes, start: int, stop: int, stride: int):
@@ -98,22 +97,15 @@ class Sam3D:
         import torch
 
         K = torch.as_tensor(cam_int).cuda()
-        out, box = [], None
-        for j, rgb in enumerate(frames(video, start, stop, stride)):
-            if box is None or j % REDETECT == 0:
-                outs = self.est.process_one_image(rgb, cam_int=K)
-            else:
-                outs = self.est.process_one_image(rgb, bboxes=box, cam_int=K) or self.est.process_one_image(rgb, cam_int=K)
+        out = []
+        # Detect every frame: reusing a box between detections shifts the crop, and the crop sets depth.
+        for rgb in frames(video, start, stop, stride):
+            outs = self.est.process_one_image(rgb, cam_int=K)
             if not outs:
                 out.append(None)
-                box = None
                 continue
             # The fencer is the largest person in frame; good enough for solo takes.
             o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
-            x0, y0, x1, y1 = o["bbox"]
-            # Pad the reused box so a lunge between detections stays inside it.
-            pw, ph = 0.15 * (x1 - x0), 0.1 * (y1 - y0)
-            box = np.array([[x0 - pw, y0 - ph, x1 + pw, y1 + ph]], dtype=np.float32)
             out.append({k: np.asarray(o[k], dtype=np.float16 if k == "pred_vertices" else np.float32) for k in KEYS})
         return out
 
