@@ -32,10 +32,11 @@ def split(p, folds, k):
 
 
 class Net(nn.Module):
-    def __init__(self, n_in, n_joints, mean_pose, hidden=128):
+    def __init__(self, n_in, n_joints, mean_pose, hidden=128, causal=False):
         super().__init__()
-        self.gru = nn.GRU(n_in, hidden, num_layers=2, batch_first=True, bidirectional=True, dropout=0.2)
-        self.out = nn.Linear(2 * hidden, n_joints * 3)
+        # causal: each frame sees only the past, as a live watch app would.
+        self.gru = nn.GRU(n_in, hidden, num_layers=2, batch_first=True, bidirectional=not causal, dropout=0.2)
+        self.out = nn.Linear(hidden if causal else 2 * hidden, n_joints * 3)
         nn.init.zeros_(self.out.weight)
         with torch.no_grad():
             self.out.bias.copy_(torch.as_tensor(mean_pose).flatten())  # start at the mean-pose baseline
@@ -90,10 +91,15 @@ def en_garde(p, hold_s=3.0):
     return np.nanmean(p["pose"][m], axis=0)
 
 
-def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, rot_deg=15.0):
-    torch.manual_seed(seed)
-    rng = np.random.default_rng(seed)
-    splits = [split(p, folds, k) for p in takes]
+def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, rot_deg=15.0, n_test=0, seeds=1,
+             hidden=128, causal=False):
+    """With n_test, the last n_test takes are the whole validation set and every other take trains in full."""
+    if n_test:
+        n_train = len(takes) - n_test
+        splits = [(windows(0, len(p["t"]), p["valid"]), (0, 0)) if i < n_train else ([], (0, len(p["t"])))
+                  for i, p in enumerate(takes)]
+    else:
+        splits = [split(p, folds, k) for p in takes]
     items = [(i, s) for i, (tr, _) in enumerate(splits) for s in tr]
     if not items:
         raise ValueError("no training windows; take too short for this many folds")
@@ -107,7 +113,32 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, 
     mu_t, sd_t = torch.as_tensor(mu, device=device), torch.as_tensor(sd, device=device)
     ys = [np.nan_to_num(p["pose"]).astype(np.float32) for p in takes]
 
-    net = Net(xs[0].shape[1], len(JOINTS), mean_pose).to(device)
+    nets = [train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed + s, log, k, rot_deg, hidden, causal)
+            for s in range(seeds)]
+
+    res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "knn", "model")}
+    for i, (p, x, (_, (a, b))) in enumerate(zip(takes, xs, splits)):
+        if b - a < WIN:
+            continue
+        true, v = p["pose"][a:b], p["valid"][a:b]
+        preds = {"mean pose": np.broadcast_to(mean_pose, true.shape),
+                 "en garde": np.broadcast_to(en_garde(p), true.shape),
+                 "knn": knn(xs, items, ys, x, a, b),
+                 "model": np.mean([predict(net, x, a, b, device) for net in nets], axis=0)}
+        if held_out is not None:
+            held_out[i][a:b] = preds["model"]
+        for name, pr in preds.items():
+            for g, j in GROUPS.items():
+                res[name][g].append((mpjpe(pr, true, v, j), int(v.sum())))
+    # Frame-weighted over takes.
+    return {name: {g: sum(e * n for e, n in r) / max(sum(n for _, n in r), 1) for g, r in gs.items()}
+            for name, gs in res.items()}
+
+
+def train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed, log, k, rot_deg, hidden, causal):
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    net = Net(takes[0]["imu"].shape[1], len(JOINTS), mean_pose, hidden, causal).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-2)
     for ep in range(epochs):
         net.train()
@@ -129,25 +160,7 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, 
             opt.step()
         if log and (ep + 1) % max(epochs // 5, 1) == 0:
             log(f"  fold {k} epoch {ep + 1}: train MPJPE {1000 * loss.item():.0f} mm")
-
-    net.eval()
-    res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "knn", "model")}
-    for i, (p, x, (_, (a, b))) in enumerate(zip(takes, xs, splits)):
-        if b - a < WIN:
-            continue
-        true, v = p["pose"][a:b], p["valid"][a:b]
-        preds = {"mean pose": np.broadcast_to(mean_pose, true.shape),
-                 "en garde": np.broadcast_to(en_garde(p), true.shape),
-                 "knn": knn(xs, items, ys, x, a, b),
-                 "model": predict(net, x, a, b, device)}
-        if held_out is not None:
-            held_out[i][a:b] = preds["model"]
-        for name, pr in preds.items():
-            for g, j in GROUPS.items():
-                res[name][g].append((mpjpe(pr, true, v, j), int(v.sum())))
-    # Frame-weighted over takes.
-    return {name: {g: sum(e * n for e, n in r) / max(sum(n for _, n in r), 1) for g, r in gs.items()}
-            for name, gs in res.items()}
+    return net.eval()
 
 
 def report(results):
@@ -162,20 +175,34 @@ def main():
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--epochs", type=int, default=150)
     ap.add_argument("--out", help="write each take's held-out predictions to <npz stem>.watchpose.npz in this dir")
+    ap.add_argument("--test", nargs="+", default=[], help="takes never trained on: train on all of the others, predict these")
+    ap.add_argument("--win", type=float, default=2.0, help="window seconds")
+    ap.add_argument("--hidden", type=int, default=128)
+    ap.add_argument("--causal", action="store_true")
+    ap.add_argument("--rot", type=float, default=15.0, help="strap-rotation augmentation, degrees")
+    ap.add_argument("--seeds", type=int, default=1, help="average this many independently trained models")
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     a = ap.parse_args()
+    global WIN
+    WIN = int(a.win * RATE)
     takes = []
-    for spec in a.takes:
+    for spec in a.takes + a.test:
         w, n, *off = spec.split(",")
         p = pair(w, n, offset=float(off[0]) if off else None)
         print(f"{n}: offset {p['offset']:.3f} s (coarse {p['coarse']:.3f}), corr {p['peak']:.2f}, "
               f"{len(p['t']) / RATE:.1f} s overlap, {p['valid'].mean():.0%} valid")
         takes.append(p)
     held_out = [np.full_like(p["pose"], np.nan) for p in takes]
-    results = [run_fold(takes, a.folds, k, a.epochs, a.device, held_out=held_out) for k in range(a.folds)]
+    kw = dict(held_out=held_out, rot_deg=a.rot, seeds=a.seeds, hidden=a.hidden, causal=a.causal)
+    if a.test:
+        results = [run_fold(takes, a.folds, 0, a.epochs, a.device, n_test=len(a.test), **kw)]
+    else:
+        results = [run_fold(takes, a.folds, k, a.epochs, a.device, **kw) for k in range(a.folds)]
     report(results)
     if a.out:
-        for spec, p, pred in zip(a.takes, takes, held_out):
+        for spec, p, pred in zip(a.takes + a.test, takes, held_out):
+            if np.isnan(pred).all():
+                continue
             out = Path(a.out) / (Path(spec.split(",")[1]).name.removesuffix(".sam3d.npz") + ".watchpose.npz")
             np.savez(out, t=p["t"], pose=pred, R=p["R"], offset=p["offset"])
             print(out)

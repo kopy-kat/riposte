@@ -4,7 +4,6 @@
 writes data/processed/<parent dir>_<stem>.sam3d.npz. The video is split into chunks run on parallel GPUs.
 """
 
-import io
 from pathlib import Path
 
 import modal
@@ -82,7 +81,9 @@ class Sam3D:
         return self.est.fov_estimator.get_cam_intrinsics(rgb).cpu().numpy(), n, fps, self.est.faces
 
     @modal.method()
-    def chunk(self, video: str, start: int, stop: int, stride: int, cam_int) -> list:
+    def chunk(self, video: str, start: int, stop: int, stride: int, cam_int, part: str):
+        import pickle
+
         import numpy as np
         import torch
 
@@ -98,21 +99,25 @@ class Sam3D:
             # The fencer is the largest person in frame; good enough for solo takes.
             o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
             out.append({k: np.asarray(o[k], dtype=np.float16 if k == "pred_vertices" else np.float32) for k in KEYS})
-        return out
+        Path(part).parent.mkdir(parents=True, exist_ok=True)
+        Path(part).write_bytes(pickle.dumps(out))
+        cache.commit()
 
 
-@app.function(timeout=1800, memory=16384)
-def merge(chunks: list, cam_int, faces, fps: float, stride: int) -> bytes:
+@app.function(timeout=1800, memory=16384, volumes={"/cache": cache})
+def merge(parts: list, cam_int, faces, fps: float, stride: int, dest: str):
+    import pickle
+
     import numpy as np
 
-    per_frame = [p for c in chunks for p in c]
+    cache.reload()
+    per_frame = [p for part in parts for p in pickle.loads(Path(part).read_bytes())]
     template = next(p for p in per_frame if p is not None)
     arrays = {k: np.stack([p[k] if p is not None else np.full_like(template[k], np.nan) for p in per_frame])
               for k in KEYS}
-    buf = io.BytesIO()
-    np.savez_compressed(buf, fps=fps / stride, cam_int=cam_int, faces=faces,
+    np.savez_compressed(dest, fps=fps / stride, cam_int=cam_int, faces=faces,
                         found=np.array([p is not None for p in per_frame]), **arrays)
-    return buf.getvalue()
+    cache.commit()
 
 
 @app.local_entrypoint()
@@ -128,6 +133,13 @@ def main(video: str, stride: int = 1):
     span = CHUNK * stride
     bounds = [(a, min(a + span, n)) for a in range(0, n, span)]
     print(f"{n} frames, {len(bounds)} chunks")
-    chunks = list(Sam3D().chunk.starmap([(data, a, b, stride, cam_int) for a, b in bounds]))
-    out.write_bytes(merge.remote(chunks, cam_int, faces, fps, stride))
+    # Chunk results stay on the volume: sending them through this client and back up to merge stalls on
+    # a home connection.
+    stem = f"/out/{src.parent.name}_{src.stem}"
+    parts = [f"/cache{stem}/{i:04d}.pkl" for i in range(len(bounds))]
+    list(Sam3D().chunk.starmap([(data, a, b, stride, cam_int, part) for (a, b), part in zip(bounds, parts)]))
+    merge.remote(parts, cam_int, faces, fps, stride, f"/cache{stem}.npz")
+    with out.open("wb") as f:
+        for b in cache.read_file(f"{stem}.npz"):
+            f.write(b)
     print(out)
