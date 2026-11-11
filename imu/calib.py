@@ -12,6 +12,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from imu.load import load_sensor_logger
+from imu.sync import clock_offset
 from imu.synth import ELBOW_KP, WRIST_KP, synth
 
 # Sensor Logger's quaternion is CoreMotion attitude, ref<-watch with ref z up: on office2,
@@ -72,7 +73,8 @@ def align(watch, npz, hand="right", offset=None, joint=None):
     df = load_sensor_logger(watch)
     sy = synth(npz, hand, joint=joint)
     if offset is None:
-        offset, _ = fine_offset(df, sy, coarse_offset(df, sy))
+        clock = clock_offset(watch)
+        offset, _ = fine_offset(df, sy, coarse_offset(df, sy) if clock is None else clock)
     tw = df.index.to_numpy()
     t = sy.index.to_numpy() + offset
     inside = (t >= tw[0]) & (t <= tw[-1])

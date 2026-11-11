@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal import butter, savgol_filter, sosfiltfilt
 
 from imu.load import load_sensor_logger
-from imu.sync import find_tap, xcorr_offset
+from imu.sync import clock_offset, find_tap, xcorr_offset
 from imu.synth import ELBOW_KP, WRIST_KP, sg_window, synth
 
 RATE = 30.0
@@ -75,6 +75,8 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     """
     df = load_sensor_logger(watch_path)
     sy = synth(npz_path, hand)
+    if offset is None:
+        offset = clock_offset(watch_path)
     coarse = coarse_offset(df, sy) if offset is None else float(offset)
     off, peak = fine_offset(df, sy, coarse)
 

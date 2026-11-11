@@ -1,6 +1,6 @@
 """SAM 3D Body npz -> point caches + scene json for render/scene.py.
 
-    uv run python -m render.prepare data/processed/<take>.sam3d.npz [--hand right] [--watch data/raw/<take>/watch]
+    uv run python -m render.prepare data/processed/<take>.sam3d.npz [--hand right] [--watch data/raw/<take>/watch [--offset s]]
 """
 
 import argparse
@@ -49,6 +49,7 @@ def main():
     ap.add_argument("npz")
     ap.add_argument("--hand", default="right", choices=["right", "left"])
     ap.add_argument("--watch", default=None, help="Sensor Logger dir: blade orientation from the watch attitude")
+    ap.add_argument("--offset", type=float, default=None, help="watch time of video t=0")
     args = ap.parse_args()
 
     d = np.load(args.npz)
@@ -66,7 +67,7 @@ def main():
     if args.watch:
         from imu.calib import watch_blade_axis
 
-        axis = watch_blade_axis(args.watch, args.npz, args.hand)["axis"].astype(np.float32)
+        axis = watch_blade_axis(args.watch, args.npz, args.hand, offset=args.offset)["axis"].astype(np.float32)
     grip = knuckle
     guard = grip + axis * GRIP_M * 0.3
     tip = guard + axis * BLADE_M

@@ -1,7 +1,7 @@
 """Video -> per-frame SAM 3D Body (MHR) reconstruction on Modal.
 
-    modal run pose/sam3d_modal.py --video data/raw/stock/1zDKDT-_p9U.mp4
-writes data/processed/<parent dir>_<stem>.sam3d.npz.
+    modal run pose/sam3d_modal.py --video data/raw/stock/1zDKDT-_p9U.mp4 [--stride 2]
+writes data/processed/<parent dir>_<stem>.sam3d.npz. The video is split into chunks run on parallel GPUs.
 """
 
 import io
@@ -38,7 +38,34 @@ app = modal.App("riposte-sam3d", image=image)
 cache = modal.Volume.from_name("riposte-cache", create_if_missing=True)
 
 
-@app.cls(gpu=["L4", "A10G", "A100-40GB"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")], timeout=3600)
+KEYS = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_vertices", "pred_cam_t",
+        "global_rot", "body_pose_params", "hand_pose_params", "scale_params", "shape_params",
+        "pred_joint_coords", "pred_global_rots", "mhr_model_params"]
+CHUNK = 240  # processed frames per GPU call; about 4 minutes each
+REDETECT = 15  # run the person detector every this many frames, else reuse the last box
+
+
+def frames(video: bytes, start: int, stop: int, stride: int):
+    import tempfile
+
+    import cv2
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        f.write(video)
+        f.flush()
+        cap = cv2.VideoCapture(f.name)
+        i = -1
+        while True:
+            ok, bgr = cap.read()
+            if not ok or i + 1 >= stop:
+                break
+            i += 1
+            if i >= start and i % stride == 0:
+                yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+@app.cls(gpu=["L4", "A10G", "A100-40GB"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")],
+         timeout=1800, max_containers=10)
 class Sam3D:
     @modal.enter()
     def load(self):
@@ -50,59 +77,70 @@ class Sam3D:
         self.est = setup_sam_3d_body(hf_repo_id="facebook/sam-3d-body-dinov3", detector_name="vitdet", fov_name="moge2")
 
     @modal.method()
-    def run(self, video: bytes, stride: int = 1) -> bytes:
+    def intrinsics(self, video: bytes):
+        # One intrinsics estimate for the whole take: the camera is static, and per-frame or per-chunk
+        # FOV estimates would make the body's depth wobble.
         import tempfile
 
         import cv2
-        import numpy as np
 
-        keys = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_vertices", "pred_cam_t",
-                "global_rot", "body_pose_params", "hand_pose_params", "scale_params", "shape_params",
-                "pred_joint_coords", "pred_global_rots", "mhr_model_params"]
-        per_frame, cam_int = [], None
-        # Frames are processed as they are decoded: a few minutes of 1080p video doesn't fit in memory.
+        rgb = next(frames(video, 0, 1, 1))
         with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
             f.write(video)
             f.flush()
             cap = cv2.VideoCapture(f.name)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            i = -1
-            while True:
-                ok, bgr = cap.read()
-                if not ok:
-                    break
-                i += 1
-                if i % stride:
-                    continue
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                if cam_int is None:
-                    # One intrinsics estimate for the whole take: the camera is static, and per-frame
-                    # FOV estimates would make the body's depth wobble.
-                    cam_int = self.est.fov_estimator.get_cam_intrinsics(rgb)
-                outs = self.est.process_one_image(rgb, cam_int=cam_int)
-                if not outs:
-                    per_frame.append(None)
-                    continue
-                # The fencer is the largest person in frame; good enough for solo takes.
-                o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
-                per_frame.append({k: np.asarray(o[k], dtype=np.float16 if k == "pred_vertices" else np.float32)
-                                  for k in keys})
+            n, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS)
+        return self.est.fov_estimator.get_cam_intrinsics(rgb).cpu().numpy(), n, fps, self.est.faces
 
-        template = next(p for p in per_frame if p is not None)
-        arrays = {
-            k: np.stack([p[k] if p is not None else np.full_like(template[k], np.nan, dtype=np.float32)
-                         for p in per_frame]).astype(np.float16 if k == "pred_vertices" else np.float32)
-            for k in keys
-        }
-        buf = io.BytesIO()
-        np.savez_compressed(buf, fps=fps / stride, cam_int=cam_int.cpu().numpy(), faces=self.est.faces,
-                            found=np.array([p is not None for p in per_frame]), **arrays)
-        return buf.getvalue()
+    @modal.method()
+    def chunk(self, video: bytes, start: int, stop: int, stride: int, cam_int) -> list:
+        import numpy as np
+        import torch
+
+        K = torch.as_tensor(cam_int).cuda()
+        out, box = [], None
+        for j, rgb in enumerate(frames(video, start, stop, stride)):
+            if box is None or j % REDETECT == 0:
+                outs = self.est.process_one_image(rgb, cam_int=K)
+            else:
+                outs = self.est.process_one_image(rgb, bboxes=box, cam_int=K) or self.est.process_one_image(rgb, cam_int=K)
+            if not outs:
+                out.append(None)
+                box = None
+                continue
+            # The fencer is the largest person in frame; good enough for solo takes.
+            o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
+            x0, y0, x1, y1 = o["bbox"]
+            # Pad the reused box so a lunge between detections stays inside it.
+            pw, ph = 0.15 * (x1 - x0), 0.1 * (y1 - y0)
+            box = np.array([[x0 - pw, y0 - ph, x1 + pw, y1 + ph]], dtype=np.float32)
+            out.append({k: np.asarray(o[k], dtype=np.float16 if k == "pred_vertices" else np.float32) for k in KEYS})
+        return out
+
+
+@app.function(timeout=1800, memory=16384)
+def merge(chunks: list, cam_int, faces, fps: float, stride: int) -> bytes:
+    import numpy as np
+
+    per_frame = [p for c in chunks for p in c]
+    template = next(p for p in per_frame if p is not None)
+    arrays = {k: np.stack([p[k] if p is not None else np.full_like(template[k], np.nan) for p in per_frame])
+              for k in KEYS}
+    buf = io.BytesIO()
+    np.savez_compressed(buf, fps=fps / stride, cam_int=cam_int, faces=faces,
+                        found=np.array([p is not None for p in per_frame]), **arrays)
+    return buf.getvalue()
 
 
 @app.local_entrypoint()
 def main(video: str, stride: int = 1):
     src = Path(video)
     out = Path(__file__).resolve().parents[1] / "data/processed" / f"{src.parent.name}_{src.stem}.sam3d.npz"
-    out.write_bytes(Sam3D().run.remote(src.read_bytes(), stride))
+    data = src.read_bytes()
+    cam_int, n, fps, faces = Sam3D().intrinsics.remote(data)
+    span = CHUNK * stride
+    bounds = [(a, min(a + span, n)) for a in range(0, n, span)]
+    print(f"{n} frames, {len(bounds)} chunks")
+    chunks = list(Sam3D().chunk.starmap([(data, a, b, stride, cam_int) for a, b in bounds]))
+    out.write_bytes(merge.remote(chunks, cam_int, faces, fps, stride))
     print(out)

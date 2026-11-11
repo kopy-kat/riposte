@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from scipy.signal import correlate, correlation_lags
 
 from imu.load import load_sensor_logger
@@ -59,6 +60,26 @@ def plot_take(path):
     out = path.parent / f"{path.stem}_sync.png"
     fig.savefig(out, dpi=120, bbox_inches="tight")
     print(f"tap at {tap:.3f} s -> {out}")
+
+
+def clock_offset(watch_dir):
+    """Watch time of video t=0 from the two devices' wall clocks, or None without a sibling video.mov.
+
+    The iPhone's creation_time has one-second resolution, so this only seeds the cross-correlation.
+    """
+    import json
+    import subprocess
+    from datetime import datetime
+
+    video = Path(watch_dir).parent / "video.mov"
+    if not video.exists():
+        return None
+    meta = pd.read_csv(Path(watch_dir) / "Metadata.csv")
+    watch_start = meta["recording epoch time"].iloc[0] / 1000
+    tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
+                                      "-of", "json", str(video)], capture_output=True, check=True).stdout)
+    video_start = datetime.fromisoformat(tags["format"]["tags"]["creation_time"].replace("Z", "+00:00")).timestamp()
+    return video_start - watch_start
 
 
 if __name__ == "__main__":
