@@ -1,6 +1,6 @@
 """Wrist IMU -> full-body pose sequence, a bidirectional GRU, k-fold over time blocks.
 
-    uv run python -m model.train data/raw/office2/watch,data/processed/office2.sam3d.npz[,offset] ...
+    uv run python -m model.train data/raw/office2/watch,data/processed/office2_video.sam3d.npz[,offset] ...
 """
 
 import argparse
@@ -20,8 +20,8 @@ def windows(lo, hi, valid, min_valid=0.8):
 
 
 def split(p, folds, k):
-    """Train and val window starts for fold k. Val is one contiguous time block; train windows keep a
-    window's length away from it so no training window shares frames with a val window."""
+    """Train window starts and the val frame range for fold k. Val is one contiguous time block; train
+    windows keep a window's length away from it so no training window shares frames with a val window."""
     T = len(p["t"])
     edges = np.linspace(0, T, folds + 1).astype(int)
     a, b = edges[k], edges[k + 1]

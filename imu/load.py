@@ -32,7 +32,7 @@ def load_sensor_logger(path) -> pd.DataFrame:
     qw/qx/qy/qz when present. df.attrs["rate_hz"] holds the detected native rate.
     """
     files = _read_csvs(path)
-    name = next((n for n, b in files.items() if b.split(b"\n", 1)[0].find(b"rotationRateX") >= 0), None)
+    name = next((n for n, b in files.items() if b"rotationRateX" in b.split(b"\n", 1)[0]), None)
     if name is None:
         raise ValueError(f"no CSV with watch motion columns (rotationRateX) in {path}; found {sorted(files)}")
     raw = pd.read_csv(io.BytesIO(files[name]))

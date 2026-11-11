@@ -1,6 +1,6 @@
 """SAM 3D Body npz -> point caches + scene json for render/scene.py.
 
-    uv run render/prepare.py data/processed/<take>.sam3d.npz [--hand right]
+    uv run python -m render.prepare data/processed/<take>.sam3d.npz [--hand right] [--watch data/raw/<take>/watch]
 """
 
 import argparse
@@ -48,6 +48,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("npz")
     ap.add_argument("--hand", default="right", choices=["right", "left"])
+    ap.add_argument("--watch", default=None, help="Sensor Logger dir: blade orientation from the watch attitude")
     args = ap.parse_args()
 
     d = np.load(args.npz)
@@ -60,8 +61,12 @@ def main():
 
     elbow, wrist, knuckle = (kps[:, KP[f"{args.hand}_{n}"]] for n in ("elbow", "wrist", "middle_knuckle"))
     unit = lambda v: v / np.linalg.norm(v, axis=-1, keepdims=True)
-    # Blade axis ~ between forearm and hand direction; replaced by the watch's orientation later.
+    # Blade axis ~ between forearm and hand direction, unless the watch measures it.
     axis = unit(unit(wrist - elbow) + unit(knuckle - wrist))
+    if args.watch:
+        from imu.calib import watch_blade_axis
+
+        axis = watch_blade_axis(args.watch, args.npz, args.hand)["axis"].astype(np.float32)
     grip = knuckle
     guard = grip + axis * GRIP_M * 0.3
     tip = guard + axis * BLADE_M

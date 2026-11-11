@@ -1,4 +1,5 @@
-import shutil
+"""uv run python -m tests.test_imu"""
+
 import zipfile
 from pathlib import Path
 
@@ -19,7 +20,8 @@ def make_fixture():
     t[0] = 0
     acc = rng.normal(0, 0.02, (n, 3))
     acc[np.argmin(abs(t - TAP_T))] += [0.2, 3.0, 0.5]
-    acc[np.argmin(abs(t - 15)) : np.argmin(abs(t - 20))] += 0.5 * np.sin(2 * np.pi * 2 * t[:, None][np.argmin(abs(t - 15)) : np.argmin(abs(t - 20))])
+    i, j = np.argmin(abs(t - 15)), np.argmin(abs(t - 20))
+    acc[i:j] += 0.5 * np.sin(2 * np.pi * 2 * t[i:j, None])
     gyr = rng.normal(0, 0.05, (n, 3))
     gyr[:, 0] += 3 * np.exp(-((t - 17) ** 2) / 0.5) + 2 * np.exp(-((t - 24) ** 2) / 0.2)
     grav = np.tile([0, 0, -1.0], (n, 1))

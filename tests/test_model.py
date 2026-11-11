@@ -1,6 +1,5 @@
-"""uv run python tests/test_model.py : full pairs -> train path on a synthetic fencer with a known offset."""
+"""uv run python -m tests.test_model : full pairs -> train path on a synthetic fencer with a known offset."""
 
-import sys
 import tempfile
 from pathlib import Path
 
@@ -8,10 +7,10 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from imu.synth import FLIP, G  # noqa: E402
-from model.pairs import JOINTS, pair  # noqa: E402
-from model.train import report, run_fold  # noqa: E402
+from imu.load import G
+from imu.synth import FLIP, WRIST_JOINT
+from model.pairs import JOINTS, pair
+from model.train import report, run_fold
 
 OFFSET = -6.213  # watch time of video t=0: the watch starts 6.2 s after the camera
 FPS, WATCH_HZ, VIDEO_S, WATCH_S = 59.94, 100.0, 40.0, 32.0
@@ -76,9 +75,9 @@ def write_npz(path, yaw):
     kp_c = (kp_b + root_b[:, None]) @ R.T + T
     cam_t = root_b @ R.T + T
     jc = np.zeros((len(t), 127, 3))
-    jc[:, 41] = kp_c[:, 41] - cam_t
+    jc[:, WRIST_JOINT["right"]] = kp_c[:, 41] - cam_t
     grots = np.tile(np.eye(3), (len(t), 127, 1, 1))
-    grots[:, 41] = FLIP @ (R @ wr.as_matrix()) @ FLIP
+    grots[:, WRIST_JOINT["right"]] = FLIP @ (R @ wr.as_matrix()) @ FLIP
     found = np.ones(len(t), bool)
     found[1500:1510] = False
     kp = kp_c - cam_t[:, None]
@@ -139,7 +138,7 @@ def test_all():
     print(f"targets, two camera placements: max diff {1000 * d:.2f} mm")
     assert d < 0.005  # only the two sub-ms offset estimates differ
     # Targets equal the body-frame skeleton (x right, y up, z back), pelvis-relative.
-    i = np.round((pa["t"] - pa["offset"]) * 59.94).astype(int)
+    i = np.round((pa["t"] - pa["offset"]) * FPS).astype(int)
     err = np.linalg.norm(pa["pose"][pa["valid"]] - truth[i[pa["valid"]]][:, JOINTS], axis=-1)
     print(f"target vs body-frame truth: median {1000 * np.median(err):.1f} mm")
     assert np.median(err) < 0.02

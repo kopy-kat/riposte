@@ -30,8 +30,7 @@ scene.render.film_transparent = True
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
 scene.render.filepath = str(take / "frames" / "f_")
-engines = {e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items}
-scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
+scene.render.engine = "BLENDER_EEVEE"
 
 cam_data = bpy.data.cameras.new("cam")
 cam_data.sensor_fit = "HORIZONTAL"
@@ -59,8 +58,7 @@ def material(name, rgb, alpha, strength):
     nt.links.new(tr.outputs[0], mix.inputs[1])
     nt.links.new(em.outputs[0], mix.inputs[2])
     nt.links.new(mix.outputs[0], out.inputs["Surface"])
-    if hasattr(m, "surface_render_method"):
-        m.surface_render_method = "BLENDED"
+    m.surface_render_method = "BLENDED"
     return m
 
 

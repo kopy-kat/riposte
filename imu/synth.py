@@ -1,6 +1,6 @@
 """Synthetic wrist-watch IMU from a SAM 3D Body npz (see pose/sam3d_modal.py).
 
-    uv run imu/synth.py data/processed/<stem>.sam3d.npz --hand right --out plot.png
+    uv run python -m imu.synth data/processed/<take>.sam3d.npz --hand right --out plot.png
 """
 
 import argparse
@@ -11,7 +11,7 @@ import pandas as pd
 from scipy.signal import savgol_filter
 from scipy.spatial.transform import Rotation, Slerp
 
-G = 9.80665
+from imu.load import G
 
 # MHR skeleton (mhr_model.pt `character_torch.skeleton.joint_parents`, names from lod*.fbx):
 # 40 r_lowarm -> 41 r_wrist_twist -> 42 r_wrist, and 76 -> 77 -> 78 on the left. Twist joints sit at the
@@ -28,19 +28,15 @@ ELBOW_KP = {"right": 8, "left": 7}
 FLIP = np.diag([1.0, -1.0, -1.0])
 
 
-def _fill(x, valid, kind):
-    """Fill invalid frames: linear for vectors, slerp for Rotation; edges hold the nearest value."""
+def _fill(x, valid):
+    """Linear across invalid frames; edges hold the nearest valid value."""
     t = np.arange(len(valid))
-    if kind == "rot":
-        slerp = Slerp(t[valid], x[valid])
-        return slerp(np.clip(t, t[valid][0], t[valid][-1]))
     return np.stack([np.interp(t, t[valid], x[valid, k]) for k in range(x.shape[1])], axis=1)
 
 
-def _window(fps, smooth_s, n):
+def sg_window(fps, smooth_s, n):
     w = max(int(round(smooth_s * fps)) | 1, 5)
-    w = min(w, n if n % 2 else n - 1)
-    return w
+    return min(w, n if n % 2 else n - 1)
 
 
 def _angular_rate(rots):
@@ -70,11 +66,12 @@ def synth(npz_path, hand="right", mount=np.eye(3), gravity=(0.0, 1.0, 0.0), smoo
     if valid.sum() < 5:
         raise ValueError("fewer than 5 usable frames")
     n = len(valid)
-    w = _window(fps, smooth_s, n)
+    w = sg_window(fps, smooth_s, n)
 
-    pos = _fill(pos, valid, "vec")
-    rots = _fill(Rotation.from_matrix(np.where(valid[:, None, None], R_cam, np.eye(3))), valid, "rot")
-    fore = _fill(fore, valid, "vec")
+    pos = _fill(pos, valid)
+    t = np.arange(n)
+    rots = Slerp(t[valid], Rotation.from_matrix(R_cam[valid]))(np.clip(t, t[valid][0], t[valid][-1]))
+    fore = _fill(fore, valid)
 
     g = np.asarray(gravity, float)
     g = G * g / np.linalg.norm(g)
@@ -99,9 +96,9 @@ def synth(npz_path, hand="right", mount=np.eye(3), gravity=(0.0, 1.0, 0.0), smoo
         {"ax": acc[:, 0], "ay": acc[:, 1], "az": acc[:, 2],
          "gx": gyro[:, 0], "gy": gyro[:, 1], "gz": gyro[:, 2],
          "qw": q[:, 0], "qx": q[:, 1], "qy": q[:, 2], "qz": q[:, 3],
-         "forearm_speed": forearm_speed},
+         "forearm_speed": forearm_speed, "valid": valid},
         index=pd.Index(np.arange(n) * dt, name="t"),
-    ).assign(valid=valid)
+    )
 
 
 def plot(df, out):

@@ -56,37 +56,37 @@ class Sam3D:
         import cv2
         import numpy as np
 
+        keys = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_vertices", "pred_cam_t",
+                "global_rot", "body_pose_params", "hand_pose_params", "scale_params", "shape_params",
+                "pred_joint_coords", "pred_global_rots", "mhr_model_params"]
+        per_frame, cam_int = [], None
+        # Frames are processed as they are decoded: a few minutes of 1080p video doesn't fit in memory.
         with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
             f.write(video)
             f.flush()
             cap = cv2.VideoCapture(f.name)
             fps = cap.get(cv2.CAP_PROP_FPS)
-            frames = []
+            i = -1
             while True:
                 ok, bgr = cap.read()
                 if not ok:
                     break
-                frames.append(bgr)
-        frames = frames[::stride]
-
-        # One intrinsics estimate for the whole take: the camera is static, and per-frame
-        # FOV estimates would make the body's depth wobble.
-        cam_int = self.est.fov_estimator.get_cam_intrinsics(cv2.cvtColor(frames[0], cv2.COLOR_BGR2RGB))
-
-        keys = ["bbox", "focal_length", "pred_keypoints_3d", "pred_keypoints_2d", "pred_vertices", "pred_cam_t",
-                "global_rot", "body_pose_params", "hand_pose_params", "scale_params", "shape_params",
-                "pred_joint_coords", "pred_global_rots", "mhr_model_params"]
-        per_frame, found = [], []
-        for bgr in frames:
-            outs = self.est.process_one_image(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), cam_int=cam_int)
-            if not outs:
-                per_frame.append(None)
-                found.append(False)
-                continue
-            # The fencer is the largest person in frame; good enough for solo takes.
-            o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
-            per_frame.append({k: np.asarray(o[k]) for k in keys})
-            found.append(True)
+                i += 1
+                if i % stride:
+                    continue
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                if cam_int is None:
+                    # One intrinsics estimate for the whole take: the camera is static, and per-frame
+                    # FOV estimates would make the body's depth wobble.
+                    cam_int = self.est.fov_estimator.get_cam_intrinsics(rgb)
+                outs = self.est.process_one_image(rgb, cam_int=cam_int)
+                if not outs:
+                    per_frame.append(None)
+                    continue
+                # The fencer is the largest person in frame; good enough for solo takes.
+                o = max(outs, key=lambda o: (o["bbox"][2] - o["bbox"][0]) * (o["bbox"][3] - o["bbox"][1]))
+                per_frame.append({k: np.asarray(o[k], dtype=np.float16 if k == "pred_vertices" else np.float32)
+                                  for k in keys})
 
         template = next(p for p in per_frame if p is not None)
         arrays = {
@@ -96,7 +96,7 @@ class Sam3D:
         }
         buf = io.BytesIO()
         np.savez_compressed(buf, fps=fps / stride, cam_int=cam_int.cpu().numpy(), faces=self.est.faces,
-                            found=np.array(found), **arrays)
+                            found=np.array([p is not None for p in per_frame]), **arrays)
         return buf.getvalue()
 
 

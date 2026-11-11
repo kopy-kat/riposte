@@ -9,8 +9,6 @@ from imu.load import load_sensor_logger
 
 df = load_sensor_logger("data/raw/office2/watch")
 blocks = pd.read_csv("data/raw/office2/labels.csv")
-blocks = pd.concat([blocks, pd.DataFrame([{"start_s": 7.5, "end_s": 10, "label": "still"},
-                                          {"start_s": 45.5, "end_s": 47.5, "label": "still"}])])
 
 rate = df.attrs["rate_hz"]
 win, hop = int(rate), int(rate / 4)

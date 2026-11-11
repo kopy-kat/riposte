@@ -8,11 +8,9 @@ from imu.load import load_sensor_logger
 
 
 def find_tap(df, window_s=10.0) -> float:
-    rate = df.attrs["rate_hz"]
     d = df[df.index < df.index[0] + window_s]
     mag = np.linalg.norm(d[["acc_x", "acc_y", "acc_z"]].to_numpy(), axis=1)
-    jerk = np.abs(np.diff(mag)) * rate
-    k = int(np.argmax(jerk))
+    k = int(np.argmax(np.abs(np.diff(mag))))
     return float(d.index[k + int(mag[k + 1] > mag[k])])  # the larger side of the biggest step is the impact
 
 

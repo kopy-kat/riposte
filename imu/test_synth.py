@@ -1,4 +1,4 @@
-"""uv run python imu/test_synth.py : analytic check on a synthetic npz."""
+"""uv run python -m imu.test_synth : analytic check on a synthetic npz."""
 
 import tempfile
 from pathlib import Path
@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from synth import FLIP, G, synth
+from imu.load import G
+from imu.synth import ELBOW_KP, FLIP, WRIST_JOINT, WRIST_KP, synth
 
 fps, N = 60.0, 240
 t = np.arange(N) / fps
@@ -23,17 +24,17 @@ R0 = Rotation.from_euler("zyx", [0.4, 0.2, -0.3])
 R = Rotation.from_rotvec(w_rot * t[:, None] * axis) * R0  # body spin about a fixed axis; sensor-frame rate is constant
 R_cam = R.as_matrix()
 
-wrist_idx, elbow_idx = 41, 8
+j = WRIST_JOINT["right"]
 kp = np.zeros((N, 70, 3))
 fdir = np.stack([np.cos(2 * t), np.sin(2 * t), np.zeros(N)], 1)  # forearm direction rotates at 2 rad/s
-kp[:, wrist_idx] = pos
-kp[:, elbow_idx] = pos - 0.27 * fdir
+kp[:, WRIST_KP["right"]] = pos
+kp[:, ELBOW_KP["right"]] = pos - 0.27 * fdir
 cam_t = np.tile(centre, (N, 1))
 jc = np.zeros((N, 127, 3))
-jc[:, 41] = pos - cam_t  # joints/keypoints are stored relative to cam_t
+jc[:, j] = pos - cam_t  # joints/keypoints are stored relative to cam_t
 kp -= cam_t[:, None]
 grots = np.tile(np.eye(3), (N, 127, 1, 1))
-grots[:, 41] = FLIP @ R_cam @ FLIP
+grots[:, j] = FLIP @ R_cam @ FLIP
 found = np.ones(N, bool)
 s = slice(100, 104)
 found[s] = False
