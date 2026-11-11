@@ -76,9 +76,12 @@ def clock_offset(watch_dir):
         return None
     meta = pd.read_csv(Path(watch_dir) / "Metadata.csv")
     watch_start = meta["recording epoch time"].iloc[0] / 1000
-    tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
-                                      "-of", "json", str(video)], capture_output=True, check=True).stdout)
-    video_start = datetime.fromisoformat(tags["format"]["tags"]["creation_time"].replace("Z", "+00:00")).timestamp()
+    # The iPhone's com.apple.quicktime.creationdate is when capture started; creation_time moves when the
+    # clip is edited in Photos.
+    tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json", str(video)],
+                                     capture_output=True, check=True).stdout)["format"]["tags"]
+    stamp = tags.get("com.apple.quicktime.creationdate", tags["creation_time"])
+    video_start = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
     return video_start - watch_start
 
 
