@@ -19,7 +19,7 @@ uv run python -m model.pairs "$raw/watch" "$npz"
 grep -q "^$raw/watch," data/takes.txt 2>/dev/null || echo "$raw/watch,$npz" >> data/takes.txt
 uv run python -m model.train $(cat data/takes.txt) --out data/processed
 
-uv run python -m render.prepare "$npz" --watch "$raw/watch" --watch-pose "data/processed/${take}_video30.watchpose.npz"
+uv run python -m render.prepare "$npz" --watch "$raw/watch" --video "$raw/video30.mp4" --watch-pose "data/processed/${take}_video30.watchpose.npz"
 wh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$raw/video30.mp4" | tr , ' ')
 /Applications/Blender.app/Contents/MacOS/Blender -b -P render/scene.py -- "data/processed/${take}_video30" $wh \
   --blend "$raw/video30.mp4" >/dev/null

@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--hand", default="right", choices=["right", "left"])
     ap.add_argument("--watch", default=None, help="Sensor Logger dir: blade orientation from the watch attitude")
     ap.add_argument("--watch-pose", default=None, help="model.train --out predictions: draw them as a skeleton")
+    ap.add_argument("--video", default=None, help="with --watch: fit the watch-to-blade direction to the blade seen in this video")
     ap.add_argument("--offset", type=float, default=None, help="watch time of video t=0")
     args = ap.parse_args()
 
@@ -72,7 +73,12 @@ def main():
     if args.watch:
         from imu.calib import watch_blade_axis
 
-        axis = watch_blade_axis(args.watch, args.npz, args.hand, offset=args.offset)["axis"].astype(np.float32)
+        b = None
+        if args.video:
+            from imu.blade_video import fit
+
+            b = fit(args.watch, args.npz, args.video, args.hand, offset=args.offset)
+        axis = watch_blade_axis(args.watch, args.npz, args.hand, blade_in_watch=b, offset=args.offset)["axis"].astype(np.float32)
     grip = knuckle
     guard = grip + axis * GRIP_M * 0.3
     tip = guard + axis * BLADE_M
