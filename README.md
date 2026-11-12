@@ -1,10 +1,10 @@
 # riposte
 
-From one Apple Watch on the weapon wrist, riposte points the épée, reconstructs the whole fencer in 3D, and times each lunge and thrust. No camera at inference. It's built for fencers drilling alone: the hand speed of every lunge and thrust in a drill set.
+Watching yourself is the quickest way to spot a fault, but a camera often can't follow you, and a salle rarely has room for one that sees the whole piste. riposte is the replay without the camera: from one Apple Watch on the weapon wrist it reconstructs the whole fencer in 3D, points the épée, and times each lunge and thrust. You film yourself once to teach it; after that, the watch is enough.
 
-Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan et al. 2026](https://arxiv.org/abs/2606.22876)) reconstruct the swing and its events but not the club. [IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday pose. riposte recovers the blade, works on fencing, and trains on its user's own phone video.
+Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan et al. 2026](https://arxiv.org/abs/2606.22876)) reconstruct the swing but not the club. [IMUPoser](https://arxiv.org/abs/2304.12518), [MobilePoser](https://arxiv.org/abs/2504.12492) and [ArmPoser](https://arxiv.org/abs/2609.08806) estimate everyday pose. riposte recovers the blade and learns one fencer's own movement.
 
-[riposte.mp4](riposte.mp4): the watch-only pose, then the same seconds against the pose from video the model never saw (white), coloured by error.
+[riposte.mp4](riposte.mp4): the watch-only pose, then against the pose from video the model never saw.
 
 ## How it works
 
@@ -44,8 +44,8 @@ On a 4-minute take held out from training:
 | pretrained MobilePoser, watch only, its 12 shared joints (`eval/mobileposer/run.py`) | 159 mm (riposte 58) |
 
 - Cross-validated over the 8 training takes: 58 mm.
-- From the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms), median onset within 33 ms and 67 ms of the video's.
-- Hand speed per rep, straight from the accelerometer, ranks reps as the video does: ρ 0.90 over 13 lunges, 0.74 over 20 thrusts. Onset-to-peak time and lunge depth don't (ρ 0.34, 0.19), so they're medians only.
+- 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms), median onset within 33 ms and 67 ms of the video's.
+- Hand speed per rep, from the accelerometer, ranks reps as the video does (ρ 0.90 over 13 lunges, 0.74 over 20 thrusts); onset-to-peak time and lunge depth don't (0.34, 0.19).
 - Without the other free-fencing take in training: 78 mm.
 - Blade: 4.1° median image-angle error (p90 11°) against the video's, vs 18° along the forearm.
 
