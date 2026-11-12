@@ -15,12 +15,10 @@ from pathlib import Path
 import numpy as np
 
 from analysis.moves import WATCH_LUNGE_PEAK, events, label, match
-from model.pairs import pair
+from model.pairs import load
 
-TAKES = [f"data/raw/home{i}/watch,data/processed/home{i}_video30.sam3d.npz" for i in range(6)] + [
-    "data/raw/office1/watch,data/processed/office1_video.sam3d.npz,-9.332",
-    "data/raw/office2/watch,data/processed/office2_video.sam3d.npz,-9.887"]
-TEST = "data/raw/demo/watch,data/processed/demo_video30.sam3d.npz"
+TAKES = [f"sample/takes/home{i}.npz" for i in range(6)] + ["sample/takes/office1.npz", "sample/takes/office2.npz"]
+TEST = "sample/takes/demo.npz"
 # (start minute, minutes): three different stretches per size where the takes allow it.
 RUNS = [(s, m) for m in (1, 3, 5, 10) for s in (0, 10, 15) if s + m <= 21] + [(0, 22)]
 
@@ -36,7 +34,7 @@ def main():
             [sys.executable, "-m", "model.train", *TAKES, "--test", TEST, "--span", f"{s},{m}", "--device", "cpu",
              "--out", str(d)], stdout=open(d / "train.log", "w"), stderr=subprocess.STDOUT,
             env={**os.environ, "OMP_NUM_THREADS": "1"})))
-    p = pair(*TEST.split(","))
+    p = load(TEST)
     video = events(p["pose"], label(p["pose"]))
     rows = []
     for s, m, d, proc in procs:
@@ -44,7 +42,7 @@ def main():
         log = (d / "train.log").read_text()
         err = {k: [int(v) for v in re.search(rf"^{k}\s+(\d+)\s+(\d+)\s+(\d+)", log, re.M).groups()]
                for k in ("mean pose", "knn", "model")}
-        pred = np.load(d / "demo_video30.watchpose.npz")["pose"]
+        pred = np.load(d / "demo.watchpose.npz")["pose"]
         watch = events(pred, label(pred), WATCH_LUNGE_PEAK)
         pairs = match(video, watch)
         row = dict(start_min=s, minutes=min(m, 21.5), arm=err["model"][0], legs=err["model"][1], body=err["model"][2],

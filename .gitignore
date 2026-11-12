@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 !sample/demo_targets.npz
 !sample/blade.npz
+!sample/takes/*.npz

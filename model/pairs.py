@@ -1,6 +1,6 @@
 """Paired (watch IMU, video pose) sequences on one 30 Hz time base, in watch time.
 
-    uv run python -m model.pairs data/raw/office2/watch data/processed/office2_video.sam3d.npz
+    uv run python -m model.pairs data/raw/office2/watch data/processed/office2_video.sam3d.npz [offset] [--save out.npz]
 """
 
 import sys
@@ -174,7 +174,21 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
                 peak=peak, tap=find_tap(df))
 
 
+def load(spec):
+    """A take from its spec. `watch_dir,sam3d_npz[,offset]` runs pair(); a lone .npz is a pair() result written
+    by this module's --save, which needs neither the video's poses nor the watch recording (sample/takes/)."""
+    w, *rest = spec.split(",")
+    if rest:
+        return pair(w, rest[0], offset=float(rest[1]) if len(rest) > 1 else None)
+    d = np.load(w)
+    return {k: d[k][()] if d[k].ndim == 0 else d[k] for k in d.files}
+
+
 if __name__ == "__main__":
-    p = pair(sys.argv[1], sys.argv[2], offset=float(sys.argv[3]) if len(sys.argv) > 3 else None)
+    save = sys.argv.pop(sys.argv.index("--save") + 1) if "--save" in sys.argv else None
+    args = [v for v in sys.argv[1:] if v != "--save"]
+    p = pair(args[0], args[1], offset=float(args[2]) if len(args) > 2 else None)
+    if save:
+        np.savez_compressed(save, **p)
     print(f"coarse {p['coarse']:.3f} s  fine {p['offset']:.3f} s  corr {p['peak']:.3f}  "
           f"{len(p['t'])} samples {p['t'][0]:.2f}-{p['t'][-1]:.2f} s  valid {p['valid'].mean():.0%}")

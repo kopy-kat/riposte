@@ -1,6 +1,8 @@
 """Wrist IMU -> full-body pose sequence, a bidirectional GRU, k-fold over time blocks.
 
     uv run python -m model.train data/raw/office2/watch,data/processed/office2_video.sam3d.npz[,offset] ...
+    uv run python -m model.train $(cat sample/takes.txt) --test sample/takes/demo.npz
+The second form trains from the pair files in sample/takes/ (model.pairs --save), without video or recordings.
 """
 
 import argparse
@@ -11,7 +13,7 @@ import torch
 from scipy.spatial.transform import Rotation
 from torch import nn
 
-from model.pairs import ARM, JOINTS, LEGS, RATE, pair
+from model.pairs import ARM, JOINTS, LEGS, RATE, load
 
 WIN, STRIDE = int(2 * RATE), int(round(0.25 * RATE))
 GROUPS = {"arm": [JOINTS.index(j) for j in ARM], "legs": [JOINTS.index(j) for j in LEGS], "body": list(range(len(JOINTS)))}
@@ -182,7 +184,7 @@ def report(results):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("takes", nargs="+", help="watch_path,npz_path[,offset_s]")
+    ap.add_argument("takes", nargs="+", help="watch_path,npz_path[,offset_s], or a pair file from model.pairs --save")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--epochs", type=int, default=150)
     ap.add_argument("--out", help="write each take's held-out predictions to <npz stem>.watchpose.npz in this dir")
@@ -199,11 +201,12 @@ def main():
     a = ap.parse_args()
     global WIN
     WIN = int(a.win * RATE)
+    if a.device == "cpu":
+        torch.set_num_threads(1)  # a GRU this small spends more on thread hand-offs than it gains: 1 thread is fastest
     takes = []
     for spec in a.takes + a.test:
-        w, n, *off = spec.split(",")
-        p = pair(w, n, offset=float(off[0]) if off else None)
-        print(f"{n}: offset {p['offset']:.3f} s (coarse {p['coarse']:.3f}), corr {p['peak']:.2f}, "
+        p = load(spec)
+        print(f"{spec.split(',')[:2][-1]}: offset {p['offset']:.3f} s (coarse {p['coarse']:.3f}), corr {p['peak']:.2f}, "
               f"{len(p['t']) / RATE:.1f} s overlap, {p['valid'].mean():.0%} valid")
         takes.append(p)
     held_out = [np.full_like(p["pose"], np.nan) for p in takes]
@@ -219,7 +222,8 @@ def main():
         for spec, p, pred in zip(a.takes + a.test, takes, held_out):
             if np.isnan(pred).all():
                 continue
-            out = Path(a.out) / (Path(spec.split(",")[1]).name.removesuffix(".sam3d.npz") + ".watchpose.npz")
+            out = Path(a.out) / (Path(spec.split(",")[:2][-1]).name.removesuffix(".npz").removesuffix(".sam3d")
+                                  + ".watchpose.npz")
             np.savez(out, t=p["t"], pose=pred, R=p["R"], offset=p["offset"])
             print(out)
 

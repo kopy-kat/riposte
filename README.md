@@ -22,6 +22,13 @@ Reproduce the held-out numbers, then scrub and orbit the replay:
 uv sync
 uv run python -m model.predict sample/demo_watch.zip sample/weights.pt --targets sample/demo_targets.npz
 uv run python -m live.view sample/demo_watch.watchpose.npz
+# Retrain from sample/takes/ (paired watch input and video pose, no video): ~3 min on one core.
+# Prints average pose 106, retrieval 87, model 63 (1 seed, 30 epochs; the shipped weights are 5 seeds of 150: 61).
+uv run python -m model.train $(cat sample/takes.txt) --test sample/takes/demo.npz --device cpu --epochs 30
+# Without the other free-fencing take: model 83 (78 with 5 seeds of 150). ~3 min.
+uv run python -m model.train $(grep -v home5 sample/takes.txt) --test sample/takes/demo.npz --device cpu --epochs 30
+# Cross-validated over time blocks of the 8 training takes: model 59 (58 at 150 epochs). ~14 min.
+uv run python -m model.train $(cat sample/takes.txt) --device cpu --epochs 30
 ```
 
 The full pipeline needs video:

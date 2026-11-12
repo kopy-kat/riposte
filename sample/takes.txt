@@ -1,0 +1,8 @@
+sample/takes/office2.npz
+sample/takes/office1.npz
+sample/takes/home0.npz
+sample/takes/home1.npz
+sample/takes/home2.npz
+sample/takes/home3.npz
+sample/takes/home4.npz
+sample/takes/home5.npz

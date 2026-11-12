@@ -25,7 +25,7 @@ from model.train import mpjpe
 BLOCKS = {"normal": None, "late arm": ("arm leads foot ms", -1), "bent arm": ("elbow at finish deg", -1),
           "dropped point": ("blade elevation deg", -1), "short lunge": ("depth x guard", -1),
           "lean forward": ("torso lean deg", 1)}
-HOLD, DOWN_DEG, STILL = 2.5, 30.0, 0.5  # separator: this many seconds within DOWN_DEG of vertical under STILL rad/s
+HOLD, DOWN_DEG, STILL = 2.5, 40.0, 1.0  # separator: this many seconds within DOWN_DEG of vertical under STILL rad/s
 L_SH, R_SH = JOINTS.index(5), JOINTS.index(6)
 
 

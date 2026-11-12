@@ -16,7 +16,7 @@ from scipy.signal import butter, savgol_filter, sosfiltfilt
 import model.train as train
 from analysis.moves import agreement, events, label
 from imu.load import G, load_sensor_logger
-from model.pairs import RATE, attitude, level_frame, pair
+from model.pairs import RATE, attitude, level_frame, load
 
 SMOOTH = 9  # frames: the video pelvis jitters in depth frame to frame
 
@@ -60,6 +60,20 @@ def leaky(v, ok, tau):
     return out
 
 
+def travel(pose, vel, tau=3.0):
+    """(T, 3) pelvis track in the pose's frame (right, up, back) from model.predict's pelvis_velocity: leaky
+    position on the floor, turned about the vertical so the levelled frame's +x, the take's mean forearm
+    heading, lies along the predicted pose's own mean forearm. Nothing from the video."""
+    from imu.synth import ELBOW_KP, WRIST_KP
+    from model.pairs import JOINTS
+
+    p = leaky(vel, np.isfinite(vel).all(1), tau)
+    p = np.stack([p[:, 0], np.zeros(len(p)), -p[:, 1]], 1)  # levelled (x, y, z up) -> y up
+    f = np.nanmean(pose[:, JOINTS.index(WRIST_KP["right"])] - pose[:, JOINTS.index(ELBOW_KP["right"])], axis=0)
+    c, s = f[0] / np.hypot(f[0], f[2]), f[2] / np.hypot(f[0], f[2])
+    return (p @ np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])).astype(np.float32)
+
+
 def score(name, v, true, ok, axis):
     """One line: velocity along the piste axis (corr, RMS), then drift over 5, 10 and 30 s windows."""
     a, b = v[ok] @ axis, true[ok] @ axis
@@ -69,7 +83,7 @@ def score(name, v, true, ok, axis):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("takes", nargs="+", help="watch_path,npz_path[,offset_s]")
+    ap.add_argument("takes", nargs="+", help="watch_path,npz_path[,offset_s], or a pair file from model.pairs --save")
     ap.add_argument("--test", required=True, help="the take never trained on")
     ap.add_argument("--epochs", type=int, default=150)
     ap.add_argument("--seeds", type=int, default=1)
@@ -80,8 +94,7 @@ def main():
 
     takes = []
     for spec in a.takes + [a.test]:
-        w, n, *off = spec.split(",")
-        p = pair(w, n, offset=float(off[0]) if off else None)
+        p = load(spec)
         p["vel"], p["valid"] = velocity(p["track"], p["valid"])
         takes.append(p)
     tr, te = takes[:-1], takes[-1]
@@ -105,11 +118,12 @@ def main():
     axis *= np.sign(axis[0])
     print(f"piste axis {np.degrees(np.arctan2(axis[1], axis[0])):+.0f} deg from the watch's +x; video speed along it "
           f"SD {np.std(true[ok] @ axis):.2f} m/s; {ok.sum() / RATE:.0f} s scored")
-    df = load_sensor_logger(a.test.split(",")[0])
     score("watch model", pred, true, ok, axis)
     score("zero velocity", np.zeros_like(pred), true, ok, axis)
-    score("integrated watch accel", integrated_accel(df, te["t"]), true, ok, axis)
-    score("  high-passed at 2 s", integrated_accel(df, te["t"], 2.0), true, ok, axis)
+    if "," in a.test:  # a pair file carries the model input, not the recording this baseline integrates
+        df = load_sensor_logger(a.test.split(",")[0])
+        score("integrated watch accel", integrated_accel(df, te["t"]), true, ok, axis)
+        score("  high-passed at 2 s", integrated_accel(df, te["t"], 2.0), true, ok, axis)
 
     pos = lambda v: np.cumsum(np.where(ok[:, None], v, 0), axis=0) / RATE
     e = np.linalg.norm((pos(pred) - pos(true))[:, :2], axis=1)
