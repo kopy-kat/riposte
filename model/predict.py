@@ -23,6 +23,7 @@ from imu.blade_video import image_angle, watch_blade, watch_grip
 from imu.load import load_sensor_logger
 from imu.synth import ELBOW_KP, WRIST_KP
 from model.pairs import JOINTS, RATE, model_input
+from model.piste import velocity
 
 
 def main():
@@ -49,7 +50,20 @@ def main():
     blade = watch_blade(fit, a.watch, t, pred)
     watch = events(pred, label(pred), WATCH_LUNGE_PEAK)
     hand = hand_speed(df, t, watch)
-    np.savez(out, t=t, pose=pred, blade=blade, grip=watch_grip(fit, a.watch, t, pred), hand=hand)
+    # Where the fencer moves: pelvis velocity (m/s) in the watch's levelled frame, if model.piste's weights are there.
+    pk = Path(a.weights).with_name("piste.pt")
+    vel = None
+    if pk.exists():
+        pk = torch.load(pk, map_location="cpu", weights_only=True)
+        xv = ((model_input(df, t) - pk["mu"].numpy()) / pk["sd"].numpy()).astype(np.float32)
+        vel = []
+        for sd in pk["nets"]:
+            net = train.Net(xv.shape[1], 1, np.zeros((1, 3), np.float32), pk["hidden"])
+            net.load_state_dict(sd)
+            vel.append(train.predict(net.eval(), xv, 0, len(t), "cpu")[:, 0])
+        vel = np.mean(vel, axis=0)
+    np.savez(out, t=t, pose=pred, blade=blade, grip=watch_grip(fit, a.watch, t, pred), hand=hand,
+             **({} if vel is None else {"pelvis_velocity": vel}))
     print(out)
 
     st = stance(pred)
@@ -93,6 +107,18 @@ def main():
         if kind == "lunge":
             rest.append(("depth", [stv[e["peak"]] / np.nanmedian(stv) for e, _ in pk], [f["depth"] for _, f in pk]))
         print(f"  medians only, rank correlation per {name}: " + ", ".join(f"{n} {agreement(a, b)[0]:.2f}" for n, a, b in rest))
+
+    if vel is not None:
+        # The video's pelvis is in its own heading frame (right, up, back); one turn about the vertical, fitted
+        # here, lines the watch's frame up with it. The piste is the line the video's pelvis moves along.
+        tv, okv = velocity(tg["root"], valid)
+        tv, pv = tv[okv][:, [0, 2]] * [1, -1], vel[okv, :2]
+        th = np.arctan2((pv[:, 0] * tv[:, 1] - pv[:, 1] * tv[:, 0]).sum(), (pv * tv).sum())
+        pv = pv @ np.array([[np.cos(th), np.sin(th)], [-np.sin(th), np.cos(th)]])
+        axis = np.linalg.svd(tv - tv.mean(0), full_matrices=False)[2][0]
+        print(f"pelvis velocity along the piste, watch vs video over {okv.sum() / RATE:.0f} s: correlation "
+              f"{np.corrcoef(pv @ axis, tv @ axis)[0, 1]:.2f}, RMS error {np.sqrt(np.mean(((pv - tv) @ axis) ** 2)):.2f} m/s "
+              f"(video SD {np.std(tv @ axis):.2f}); frames aligned by one yaw")
 
     ok, K, grip = tg["blade_ok"], tg["K"], tg["grip"][tg["blade_ok"]]
     fore = pred[:, JOINTS.index(WRIST_KP["right"])] - pred[:, JOINTS.index(ELBOW_KP["right"])]
