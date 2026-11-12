@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>riposte live</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0c10; color: #e8e8ee; font: 20px -apple-system, sans-serif; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #top, #stats { position: fixed; left: 48px; }
+  #top { top: 36px; font-size: 34px; font-weight: 600; }
+  #top small { display: block; font-size: 20px; font-weight: 400; color: #9a9aa6; margin-top: 6px; }
+  #stats { bottom: 36px; font-size: 24px; font-variant-numeric: tabular-nums; }
+  #stats b { color: #78ff96; font-weight: 600; }
+</style>
+<div id="top">Live from the watch<small>Apple Watch IMU only · causal model · pelvis held fixed · drag to turn</small></div>
+<div id="stats">waiting for the watch…</div>
+<canvas id="c"></canvas>
+<script>
+const BONES = [[0,5],[0,6],[5,6],[5,7],[7,22],[6,8],[8,21],[5,9],[6,10],[9,10],[9,11],[11,13],[10,12],[12,14],[13,15],[13,17],[14,18],[14,20]];
+const ARM = new Set(["6,8", "8,21"]), WRIST = 21, BLADE_M = 0.9;
+const c = document.getElementById("c"), g = c.getContext("2d"), stats = document.getElementById("stats");
+let yaw = 0.35, msg = null, lat = [], age = [], n = 0, since = performance.now(), fps = 0;
+
+c.onpointermove = e => { if (e.buttons) yaw += e.movementX * 0.01; };
+
+new EventSource("/events").onmessage = e => { msg = JSON.parse(e.data); n++; };
+
+function draw() {
+  requestAnimationFrame(draw);
+  const w = c.width = c.clientWidth * devicePixelRatio, h = c.height = c.clientHeight * devicePixelRatio;
+  if (!msg) return;
+  const s = h / 2.6, cy = Math.cos(yaw), sy = Math.sin(yaw);
+  // Body frame is (right, up, back); the pelvis is the origin, about 0.95 m above the floor.
+  const P = p => [w / 2 + s * (p[0] * cy + p[2] * sy), h * 0.5 - s * p[1]];
+  g.strokeStyle = "#2a2a34"; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(0, h * 0.5 + s * 0.97); g.lineTo(w, h * 0.5 + s * 0.97); g.stroke();
+  g.lineCap = "round";
+  for (const [a, b] of BONES) {
+    g.strokeStyle = ARM.has(a + "," + b) ? "#78ff96" : "#e8e8ee"; g.lineWidth = s * 0.03;
+    g.beginPath(); g.moveTo(...P(msg.pose[a])); g.lineTo(...P(msg.pose[b])); g.stroke();
+  }
+  if (msg.blade) {
+    const a = msg.pose[WRIST], b = a.map((v, i) => v + BLADE_M * msg.blade[i]);
+    g.strokeStyle = "#ffd24a"; g.lineWidth = s * 0.012;
+    g.beginPath(); g.moveTo(...P(a)); g.lineTo(...P(b)); g.stroke();
+  }
+  if (msg.drawn) return;
+  msg.drawn = true;
+  const now = Date.now();
+  lat = lat.concat(now - msg.arrived * 1000).slice(-90);
+  age = age.concat(now - msg.t * 1000).slice(-90);
+  if (performance.now() - since > 1000) { fps = Math.round(n * 1000 / (performance.now() - since)); n = 0; since = performance.now(); }
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  // A replayed recording carries its old timestamps, so only a live stream has a motion-to-screen figure.
+  const live = med(age) < 10000 ? ` · motion to screen <b>${med(age).toFixed(0)} ms</b>` : " · replay";
+  stats.innerHTML = `samples received to pose drawn <b>${med(lat).toFixed(0)} ms</b>${live} · ${fps} poses/s`;
+}
+draw();
+</script>
