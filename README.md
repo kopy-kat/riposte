@@ -16,7 +16,7 @@ Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan 
 
 ## How to run
 
-Reproduce the held-out numbers from the watch alone, in about 3 s:
+Reproduce the held-out numbers from the watch alone, in under a minute:
 
 ```sh
 uv sync
@@ -46,7 +46,7 @@ On a 4-minute take held out from training:
 
 - The retrieval row comes from `model.train`. Cross-validated over the 8 training takes, the model gets 58 mm.
 - Moves found from the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms). Their median onset is within 33 ms and 67 ms of the video's.
-- Blade: 3.9° median image-angle error (p90 11°) against the video's, vs 18° along the forearm.
+- Blade: 4.1° median image-angle error (p90 11°) against the video's, vs 18° along the forearm.
 
 ## What's faked or mocked
 
