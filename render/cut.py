@@ -1,9 +1,10 @@
 """The demo video: title, the watch-only fencer, the same seconds over the video, the numbers.
 
     uv run python -m render.cut data/processed/cut_watch_only/frames data/processed/cut_deviation.mp4 \
-        data/processed/demo_video30.watchpose.npz riposte.mp4
+        data/processed/demo_video30.watchpose.npz data/raw/demo/watch riposte.mp4
 frames: render/scene.py output for the watch-only take (RGBA PNGs, 1920x1080, f_N is pose sample N - 1);
-deviation: render/deviation.py output covering the same seconds; the watch pose labels the moves.
+deviation: render/deviation.py output covering the same seconds; the watch pose labels the moves and the
+watch recording gives each one's hand speed.
 """
 
 import subprocess
@@ -14,7 +15,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from analysis.moves import WATCH_LUNGE_PEAK, events, label
+from analysis.moves import WATCH_LUNGE_PEAK, events, hand_speed, label
+from imu.load import load_sensor_logger
 from render.deviation import BG, FONT, STOPS
 
 W, H, FPS = 1920, 1080, 30
@@ -69,17 +71,19 @@ def card(lines, seconds):
 
 
 def move_at(ev, i):
-    """(name, seconds onset to peak or None before the peak, opacity) of the latest move showing at pose sample i."""
+    """(name, hand speed in m/s or None before the peak, opacity) of the latest move showing at pose sample i."""
     on = [e for e in ev if e["onset"] <= i <= e["peak"] + HOLD * FPS]
     if not on:
         return None
     e = max(on, key=lambda e: e["onset"])
     alpha = min(1.0, (i - e["onset"] + 1) / 4, (e["peak"] + HOLD * FPS - i) / 8)
-    return NAME[e["kind"]], e["duration"] if i >= e["peak"] else None, alpha
+    return NAME[e["kind"]], e["hand"] if i >= e["peak"] else None, alpha
 
 
-def watch_only(frames, pose):
+def watch_only(frames, pose, t, df):
     ev = events(pose, label(pose), WATCH_LUNGE_PEAK)
+    for e, v in zip(ev, hand_speed(df, t, ev)):
+        e["hand"] = v
     small, big, mid = font(36, "Regular"), font(64, "Light"), font(40, "Light")
     mint = tuple(int(v) for v in MINT)
     for i, path in enumerate(frames):
@@ -95,12 +99,12 @@ def watch_only(frames, pose):
         g.text((64, H - 64), "Apple Watch only", font=small, fill=(255, 255, 255, int(150 * out)), anchor="ls")
         m = move_at(ev, int(path.stem[2:]) - 1)
         if m:
-            name, dur, a = m
+            name, hand, a = m
             a *= out
             g.text((64, H - 130), name, font=big, fill=(255, 255, 255, int(235 * a)), anchor="ls")
-            if dur is not None:
+            if hand is not None:
                 x = 64 + g.textlength(name, font=big) + 24
-                g.text((x, H - 130), f"{dur:.2f} s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
+                g.text((x, H - 130), f"hand {hand:.1f} m/s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
         img.alpha_composite(txt)
         yield img
 
@@ -119,12 +123,13 @@ def narrate(silent, out, tmp):
 
 
 def main():
-    frames, deviation, watch, out = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+    frames, deviation, watch, out = Path(sys.argv[1]), sys.argv[2], np.load(sys.argv[3]), sys.argv[5]
     tmp = Path(tempfile.mkdtemp())
     grey, mint = (150, 150, 155), tuple(int(v) for v in MINT)
     encode(tmp / "title.mp4", card([("riposte", 120, "Light", (240, 240, 240), -20),
                                     ("one wrist, the whole fencer", 32, "Regular", grey, 80)], 3.0))
-    encode(tmp / "watch.mp4", watch_only(sorted(frames.glob("f_*.png")), np.load(watch)["pose"]))
+    encode(tmp / "watch.mp4", watch_only(sorted(frames.glob("f_*.png")), watch["pose"], watch["t"],
+                                           load_sensor_logger(sys.argv[4])))
     encode(tmp / "end.mp4", card([("61 mm", 110, "Light", mint, -60),
                                   ("mean joint error on a take the model never saw", 30, "Regular", grey, 40),
                                   ("average pose: 106 mm", 26, "Regular", (95, 95, 100), 90)], 4.0))

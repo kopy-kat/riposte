@@ -8,8 +8,11 @@ move (moves labelled from the video) and how well watch-only events match the vi
 import sys
 
 import numpy as np
+from scipy.signal import savgol_filter
+from scipy.stats import spearmanr
 
-from model.pairs import JOINTS, RATE, pair
+from imu.load import G
+from model.pairs import JOINTS, RATE, attitude, pair
 from model.train import GROUPS, mpjpe
 
 L_ANK, R_ANK = JOINTS.index(13), JOINTS.index(14)
@@ -22,6 +25,7 @@ LUNGE_PEAK, GUARD_WIDTH = 1.9, 1.1
 WATCH_LUNGE_PEAK = 1.8
 MATCH = int(0.5 * RATE)
 GAP = int(0.3 * RATE)  # runs this close are one move: the thresholds flicker at their edges
+PRE, POST = int(0.3 * RATE), int(0.1 * RATE)  # hand speed is taken from PRE before the onset to POST past the peak
 
 
 def stance(pose):
@@ -81,6 +85,39 @@ def events(pose, moves, lunge_peak=LUNGE_PEAK):
             out.append(dict(kind=kind, start=int(a), end=int(b), onset=onset, peak=peak, duration=(peak - onset) / RATE,
                             speed=float(np.nanmax(sp[onset:peak + 1]))))
     return sorted(out, key=lambda e: e["start"])
+
+
+def hand_speed(df, t, ev):
+    """Per event, the peak change in horizontal hand velocity, m/s: the watch's user acceleration turned into
+    CoreMotion's z-up reference and integrated at its native rate. It never passes through the pose model, so
+    it can't regress to the average rep; ev (frames on the grid t) only places the window."""
+    tw = df.index.to_numpy()
+    a = np.einsum("tij,tj->ti", attitude(df, tw), df[["acc_x", "acc_y", "acc_z"]].to_numpy())[:, :2] * G
+    out = []
+    for e in ev:
+        m = (tw >= t[max(e["onset"] - PRE, 0)]) & (tw <= t[min(e["peak"] + POST, len(t) - 1)])
+        out.append(np.linalg.norm(np.cumsum(a[m], axis=0), axis=1).max() / df.attrs["rate_hz"])
+    return np.array(out)
+
+
+def video_hand_speed(pose, root, ev):
+    """hand_speed's quantity from the video: the wrist's track in the room (heading frame, y up) over the same windows."""
+    w = (pose[:, WR] + root)[:, [0, 2]].astype(float)
+    i, ok = np.arange(len(w)), np.isfinite(w).all(1)
+    w = np.stack([np.interp(i, i[ok], w[ok, k]) for k in range(2)], axis=1)
+    v = savgol_filter(w, 7, 3, deriv=1, delta=1 / RATE, axis=0)
+    out = []
+    for e in ev:
+        a, b = max(e["onset"] - PRE, 0), min(e["peak"] + POST, len(v) - 1)
+        out.append(np.linalg.norm(v[a:b + 1] - v[a], axis=1).max())
+    return np.array(out)
+
+
+def agreement(video, watch):
+    """Rank correlation, median |watch - video| and the video's rep-to-rep SD: a per-rep number is worth showing
+    only if it orders the reps as the video does and errs by less than the reps differ."""
+    video, watch = np.asarray(video, float), np.asarray(watch, float)
+    return float(spearmanr(video, watch)[0]), float(np.median(np.abs(watch - video))), float(np.std(video, ddof=1))
 
 
 def match(truth, pred):
