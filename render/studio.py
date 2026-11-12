@@ -87,6 +87,54 @@ def trail_material():
     return m
 
 
+def kit_material():
+    """The fencing kit: colour, roughness and metal per vertex (render/prepare.py's kit), with the mask's wire
+    mesh drawn where `kit_mesh` is positive so its edge is a clean line, not a row of triangles."""
+    m = bpy.data.materials.new("kit")
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    col, fin, mesh = (nt.nodes.new("ShaderNodeAttribute") for _ in range(3))
+    col.attribute_name, fin.attribute_name, mesh.attribute_name = "kit_col", "kit_finish", "kit_mesh"
+    sep = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(fin.outputs["Color"], sep.inputs["Color"])
+    edge = nt.nodes.new("ShaderNodeMapRange")
+    edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value = -0.002, 0.002
+    nt.links.new(mesh.outputs["Fac"], edge.inputs["Value"])
+    wire = s["kit"]["mesh"]
+    for socket, src, value in (("Base Color", col.outputs["Color"], (*wire[:3], 1)),
+                               ("Roughness", sep.outputs["Red"], wire[3]), ("Metallic", sep.outputs["Green"], wire[4])):
+        mix = nt.nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA" if socket == "Base Color" else "FLOAT"
+        a, bb, out = (6, 7, 2) if socket == "Base Color" else (2, 3, 0)
+        nt.links.new(edge.outputs["Result"], mix.inputs[0])
+        nt.links.new(src, mix.inputs[a])
+        mix.inputs[bb].default_value = value
+        nt.links.new(mix.outputs[out], b.inputs[socket])
+    nt.links.new(sep.outputs["Blue"], b.inputs["Sheen Weight"])
+    b.inputs["Sheen Roughness"].default_value = 0.4
+    return m
+
+
+def dress(ob):
+    """Paints the kit and lets the cloth hang off the body: smoothed where it is fabric, then let out a little."""
+    kit, part = s["kit"], s["body_kit"]
+    me = ob.data
+    col = me.attributes.new("kit_col", "FLOAT_COLOR", "POINT")
+    col.data.foreach_set("color", [c for p in part for c in (*kit[p][:3], 1.0)])
+    fin = me.attributes.new("kit_finish", "FLOAT_COLOR", "POINT")
+    fin.data.foreach_set("color", [c for p in part for c in (kit[p][3], kit[p][4], 0.5 * kit[p][5], 1.0)])
+    me.attributes.new("kit_mesh", "FLOAT", "POINT").data.foreach_set("value", s["body_mesh"])
+    cloth = ob.vertex_groups.new(name="cloth")
+    for i, p in enumerate(part):
+        if kit[p][5] > 0:
+            cloth.add([i], kit[p][5], "REPLACE")
+    sm = ob.modifiers.new("smooth", "SMOOTH")
+    sm.factor, sm.iterations, sm.vertex_group = 0.5, 30, "cloth"
+    out = ob.modifiers.new("ease", "DISPLACE")
+    out.strength, out.mid_level, out.vertex_group = 0.016, 0.0, "cloth"
+
+
 def cached_mesh(name, rest, faces, pc2, mat, smooth=True):
     me = bpy.data.meshes.new(name)
     me.from_pydata(rest, [], faces)
@@ -116,9 +164,10 @@ def plane(name, sx, sy, z, mat, yaw=0.0, x=0.0, y=0.0):
 
 lit = bpy.data.collections.new("fencer")
 scene.collection.children.link(lit)
-for ob in (cached_mesh("body", s["body_rest"], s["body_faces"], "body.pc2", principled("body", (0.5, 0.52, 0.54), 0.7)),
-           cached_mesh("blade", s["blade_rest"], s["blade_faces"], "blade.pc2",
-            principled("blade", (0.9, 0.9, 0.92), 0.25, 1.0, (1, 1, 1), 1.2))):
+body = cached_mesh("body", s["body_rest"], s["body_faces"], "body.pc2", kit_material())
+dress(body)
+for ob in (body, cached_mesh("blade", s["blade_rest"], s["blade_faces"], "blade.pc2",
+                             principled("blade", (0.9, 0.9, 0.92), 0.25, 1.0, (1, 1, 1), 0.8))):
     lit.objects.link(ob)
 trail = cached_mesh("trail", s["trail_rest"], s["trail_faces"], "trail.pc2", trail_material())
 trail.visible_shadow = False

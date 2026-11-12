@@ -1,10 +1,11 @@
-"""The demo video: title, the watch-only fencer, the same seconds over the video, the numbers.
+"""The demo video: title, the watch-only fencer on a piste, its skeleton and blade against the video's, the
+same drawn over the video, the numbers.
 
-    uv run python -m render.cut data/processed/cut_body/frames data/processed/cut_deviation.mp4 \
-        data/processed/demo_video30.watchpose.npz data/raw/demo/watch data/raw/demo/video30.mp4 riposte.mp4
-frames: render/studio.py output for the watch-only take (PNGs, 1920x1080, f_N is pose sample N - 1);
-deviation: render/deviation.py output covering the same seconds; the watch pose labels the moves and the
-watch recording gives each one's hand speed.
+    uv run python -m render.cut data/processed/cut_fencer/frames data/processed/demo_video30.watchpose.npz \
+        data/raw/demo/watch data/processed/cut_fencer/deviation.mp4 data/processed/cut_fencer/over.mp4 riposte.mp4
+frames: render/studio.py output (PNGs, 1920x1080, f_N is pose sample N - 1); the watch pose labels its moves and
+the watch recording gives each one's hand speed. The two clips are render/deviation.py's, without and with --over.
+Writes a silent cut and prints where each part starts, for timing NARRATION; narrate() then adds the voice.
 """
 
 import subprocess
@@ -80,51 +81,33 @@ def move_at(ev, i):
     return NAME[e["kind"]], e["hand"] if i >= e["peak"] else None, alpha
 
 
-INSET = (608, 342)
-
-
-def video_frames(video, start, n):
-    """n frames of the phone video from `start` seconds, at the cut's rate and the inset's size."""
-    w, h = INSET
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-i", video, "-vf", f"fps={FPS},scale={w}:{h}",
-                          "-frames:v", str(n), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
-    for _ in range(n):
-        yield Image.frombytes("RGB", (w, h), p.stdout.read(w * h * 3))
-
-
-def watch_only(frames, pose, t, df, video, offset):
+def watch_only(frames, pose, t, df):
     ev = events(pose, label(pose), WATCH_LUNGE_PEAK)
     for e, v in zip(ev, hand_speed(df, t, ev)):
         e["hand"] = v
-    small, big, mid, note = font(36, "Regular"), font(64, "Light"), font(40, "Light"), font(24, "Regular")
+    big, mid, note = font(64, "Light"), font(40, "Light"), font(30, "Regular")
     mint = tuple(int(v) for v in MINT)
     # The floor under the captions is lit: darken the bottom of the frame so the text holds.
     shade = np.zeros((H, W, 4), np.uint8)
     shade[..., :3] = BG
     shade[..., 3] = (200 * np.clip((np.arange(H) - (H - 320)) / 320, 0, 1) ** 1.5)[:, None]
     shade = Image.fromarray(shade)
-    # The same seconds of the phone video: watch time t is video time t - offset.
-    inset = video_frames(video, t[int(frames[0].stem[2:]) - 1] - offset, len(frames))
     for i, path in enumerate(frames):
         img = Image.open(path).convert("RGBA")
         img.alpha_composite(shade)
-        img.paste(next(inset), (W - 64 - INSET[0], 64))
         out = np.clip(((len(frames) - 1 - i) / FPS - FADE) / 0.3, 0, 1)  # text gone before the crossfade
         txt = Image.new("RGBA", (W, H))
         g = ImageDraw.Draw(txt)
-        g.text((W - 64, 64 + INSET[1] + 34), "phone video of the same seconds  ·  the model never saw it",
-               font=note, fill=(255, 255, 255, int(150 * out)), anchor="rs")
-        g.text((64, H - 64), "Apple Watch only", font=small, fill=(255, 255, 255, int(190 * out)), anchor="ls")
-        g.text((W - 64, H - 64), "body surface fitted to the watch-predicted joints  ·  pelvis held in place",
-               font=note, fill=(255, 255, 255, int(120 * out)), anchor="rs")
+        g.text((64, H - 64), "Apple Watch only  ·  body surface fitted to the predicted joints", font=note,
+               fill=(255, 255, 255, int(190 * out)), anchor="ls")
         m = move_at(ev, int(path.stem[2:]) - 1)
         if m:
             name, hand, a = m
             a *= out
-            g.text((64, H - 130), name, font=big, fill=(255, 255, 255, int(235 * a)), anchor="ls")
+            g.text((64, H - 120), name, font=big, fill=(255, 255, 255, int(235 * a)), anchor="ls")
             if hand is not None:
                 x = 64 + g.textlength(name, font=big) + 24
-                g.text((x, H - 130), f"hand {hand:.1f} m/s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
+                g.text((x, H - 120), f"hand {hand:.1f} m/s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
         img.alpha_composite(txt)
         yield img
 
@@ -143,30 +126,33 @@ def narrate(silent, out, tmp):
 
 
 def main():
-    frames, deviation, watch, out = Path(sys.argv[1]), sys.argv[2], np.load(sys.argv[3]), sys.argv[6]
+    frames, watch, watch_dir, deviation, over, out = sys.argv[1:7]
+    frames, watch = Path(frames), np.load(watch)
     tmp = Path(tempfile.mkdtemp())
     grey, mint = (150, 150, 155), tuple(int(v) for v in MINT)
     encode(tmp / "title.mp4", card([("riposte", 120, "Light", (240, 240, 240), -20),
                                     ("one wrist, the whole fencer", 32, "Regular", grey, 80)], 3.0))
     encode(tmp / "watch.mp4", watch_only(sorted(frames.glob("f_*.png")), watch["pose"], watch["t"],
-                                           load_sensor_logger(sys.argv[4]), sys.argv[5], float(watch["offset"])))
+                                           load_sensor_logger(watch_dir)))
     encode(tmp / "end.mp4", card([("61 mm", 110, "Light", mint, -60),
                                   ("mean joint error on a take the model never saw", 30, "Regular", grey, 40),
                                   ("average pose: 106 mm", 26, "Regular", (95, 95, 100), 90)], 4.0))
 
-    parts = [tmp / "title.mp4", tmp / "watch.mp4", deviation, tmp / "end.mp4"]
+    parts = [tmp / "title.mp4", tmp / "watch.mp4", deviation, over, tmp / "end.mp4"]
     lengths = [float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
                                                "csv=p=0", str(p)])) for p in parts]
-    chain, prev, t = [], "[v0]", 0.0
+    chain, prev, t, starts = [], "[v0]", 0.0, [0.0]
     for i in range(1, len(parts)):
         t += lengths[i - 1] - FADE
+        starts.append(t)
         chain.append(f"{prev}[v{i}]xfade=transition=fade:duration={FADE}:offset={t:.3f}[x{i}]")
         prev = f"[x{i}]"
     norm = ";".join(f"[{i}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[v{i}]" for i in range(len(parts)))
     subprocess.run(["ffmpeg", "-v", "error", "-y", *[a for p in parts for a in ("-i", str(p))], "-filter_complex",
                     norm + ";" + ";".join(chain), "-map", prev, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-                    str(tmp / "silent.mp4")], check=True)
-    narrate(tmp / "silent.mp4", out, tmp)
+                    "-movflags", "+faststart", out], check=True)
+    for name, a, n in zip(("title", "fencer", "skeletons", "over video", "end"), starts, lengths):
+        print(f"{name:<11} {a:5.1f} s  for {n:4.1f} s")
     print(out)
 
 
