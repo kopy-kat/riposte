@@ -117,7 +117,8 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, 
     nets = [train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed + s, log, k, rot_deg, hidden, causal)
             for s in range(seeds)]
     if save:
-        torch.save(dict(nets=[net.state_dict() for net in nets], mu=mu, sd=sd, mean_pose=mean_pose, hidden=hidden,
+        torch.save(dict(nets=[dict(net.state_dict()) for net in nets], mu=torch.as_tensor(mu), sd=torch.as_tensor(sd),
+                        mean_pose=torch.as_tensor(mean_pose), hidden=hidden,
                         causal=causal, win=WIN), save)
 
     res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "knn", "model")}

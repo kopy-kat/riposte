@@ -24,12 +24,12 @@ def main():
     ap.add_argument("--targets")
     a = ap.parse_args()
 
-    ck = torch.load(a.weights, map_location="cpu", weights_only=False)
+    ck = torch.load(a.weights, map_location="cpu", weights_only=True)
     train.WIN = ck["win"]
     df = load_sensor_logger(a.watch)
     tg = np.load(a.targets) if a.targets else None
     t = tg["t"] if tg is not None else np.arange(np.ceil(df.index[0] * RATE), np.floor(df.index[-1] * RATE) + 1) / RATE
-    x = ((model_input(df, t) - ck["mu"]) / ck["sd"]).astype(np.float32)
+    x = ((model_input(df, t) - ck["mu"].numpy()) / ck["sd"].numpy()).astype(np.float32)
     nets = []
     for sd in ck["nets"]:
         net = train.Net(x.shape[1], len(JOINTS), ck["mean_pose"], ck["hidden"], ck["causal"])
@@ -43,7 +43,7 @@ def main():
         return
 
     true, valid = tg["pose"], tg["valid"]
-    mean = np.broadcast_to(ck["mean_pose"], true.shape)
+    mean = np.broadcast_to(ck["mean_pose"].numpy(), true.shape)
     for name, pr in (("watch model", pred), ("average pose", mean)):
         print(f"{name:<14}MPJPE mm  " + "".join(f"{g}: {train.mpjpe(pr, true, valid, j):.0f}  " for g, j in train.GROUPS.items()))
     video, watch = events(true, label(true)), events(pred, label(pred), WATCH_LUNGE_PEAK)
