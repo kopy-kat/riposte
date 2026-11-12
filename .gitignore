@@ -8,3 +8,4 @@ data/*
 __pycache__/
 .venv/
 !sample/demo_targets.npz
+!sample/blade.npz

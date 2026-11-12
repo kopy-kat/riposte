@@ -1,7 +1,8 @@
 """Watch-only pose from a Sensor Logger recording and weights from model.train --save; no video needed.
 
     uv run python -m model.predict sample/demo_watch.zip sample/weights.pt --targets sample/demo_targets.npz
-writes <watch>.watchpose.npz beside the input. With --targets (video poses on the same watch-time grid), it
+writes <watch>.watchpose.npz beside the input: the pose, and the blade direction from imu.blade_video's
+fitted model (sample/blade.npz, beside the weights). With --targets (video poses on the same watch-time grid), it
 prints the error and the lunges and thrusts found from the watch against the video's.
 """
 
@@ -13,6 +14,7 @@ import torch
 
 import model.train as train
 from analysis.moves import WATCH_LUNGE_PEAK, events, label, match
+from imu.blade_video import watch_blade
 from imu.load import load_sensor_logger
 from model.pairs import JOINTS, RATE, model_input
 
@@ -37,7 +39,8 @@ def main():
         nets.append(net.eval())
     pred = np.mean([train.predict(net, x, 0, len(t), "cpu") for net in nets], axis=0)
     out = Path(a.watch).with_suffix(".watchpose.npz")
-    np.savez(out, t=t, pose=pred)
+    blade = watch_blade(np.load(Path(a.weights).with_name("blade.npz")), a.watch, t, pred)
+    np.savez(out, t=t, pose=pred, blade=blade)
     print(out)
     if tg is None:
         return
