@@ -1,8 +1,9 @@
 """Watch-only pose from a Sensor Logger recording and weights from model.train --save; no video needed.
 
     uv run python -m model.predict sample/demo_watch.zip sample/weights.pt --targets sample/demo_targets.npz
-writes <watch>.watchpose.npz beside the input: the pose, and the blade direction from imu.blade_video's
-fitted model (sample/blade.npz, beside the weights). With --targets (video poses on the same watch-time grid), it
+writes <watch>.watchpose.npz beside the input: the pose, the blade's direction and where it leaves the hand
+(grip, an offset from the predicted wrist) from imu.blade_video's fitted model (sample/blade.npz, beside the
+weights), and hand, the hand speed of each move analysis.moves.events finds in that pose, in its order. With --targets (video poses on the same watch-time grid), it
 prints the error, the lunges and thrusts found from the watch against the video's, how well each per-rep number
 agrees with the video's, and the blade's image-angle error against the blade detected in the video (frames where
 it was found), next to a blade along the forearm.
@@ -18,7 +19,7 @@ import torch
 
 import model.train as train
 from analysis.moves import WATCH_LUNGE_PEAK, agreement, events, hand_speed, label, match, stance, video_hand_speed
-from imu.blade_video import image_angle, watch_blade
+from imu.blade_video import image_angle, watch_blade, watch_grip
 from imu.load import load_sensor_logger
 from imu.synth import ELBOW_KP, WRIST_KP
 from model.pairs import JOINTS, RATE, model_input
@@ -44,13 +45,15 @@ def main():
         nets.append(net.eval())
     pred = np.mean([train.predict(net, x, 0, len(t), "cpu") for net in nets], axis=0)
     out = Path(a.watch).with_suffix(".watchpose.npz")
-    blade = watch_blade(np.load(Path(a.weights).with_name("blade.npz")), a.watch, t, pred)
-    np.savez(out, t=t, pose=pred, blade=blade)
+    fit = np.load(Path(a.weights).with_name("blade.npz"))
+    blade = watch_blade(fit, a.watch, t, pred)
+    watch = events(pred, label(pred), WATCH_LUNGE_PEAK)
+    hand = hand_speed(df, t, watch)
+    np.savez(out, t=t, pose=pred, blade=blade, grip=watch_grip(fit, a.watch, t, pred), hand=hand)
     print(out)
 
-    watch = events(pred, label(pred), WATCH_LUNGE_PEAK)
     st = stance(pred)
-    for e, v in zip(watch, hand_speed(df, t, watch)):
+    for e, v in zip(watch, hand):
         e["hand"], e["depth"] = v, st[e["peak"]] / np.nanmedian(st)
     print("\nmove     at      hand speed")
     for e in watch:
