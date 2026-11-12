@@ -10,3 +10,5 @@ __pycache__/
 !sample/demo_targets.npz
 !sample/blade.npz
 !sample/takes/*.npz
+!sample/nextday_mac.npz
+!sample/nextday_phone.npz

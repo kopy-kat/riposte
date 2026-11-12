@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from analysis.faults import BLOCKS, separators  # noqa: E402
+from analysis.faults import separators  # noqa: E402
 from imu.load import load_sensor_logger  # noqa: E402
 
 WEIGHTS = "sample/weights.pt"
@@ -84,11 +84,9 @@ def main():
         print("\n=== blade in 3D from both cameras ===", flush=True)
         run("uv", "run", "python", "-m", "analysis.blade3d", out / "phone_normal.targets.npz", out / "mac_normal.targets.npz",
             out / "phone_normal.watchpose.npz")
-    if len(seps) == len(BLOCKS):
+    if seps:
         print("\n=== deliberate faults: does the watch-only replay show them? ===", flush=True)
         run("uv", "run", "python", "-m", "analysis.faults", watch, out / "phone_full.targets.npz", out / "phone_full.watchpose.npz")
-    elif seps:
-        print(f"\n{len(seps)} holds found for {len(BLOCKS)} blocks: run analysis.faults with --blocks (see its docstring)")
 
 
 if __name__ == "__main__":
