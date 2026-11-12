@@ -151,7 +151,7 @@ def train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed, log
             # One random rotation per window on gyro, accel and gravity alike: a different strap placement.
             rot = Rotation.from_rotvec(rng.normal(size=(len(batch), 3)) * np.deg2rad(rot_deg) / np.sqrt(3))
             rot = torch.as_tensor(rot.as_matrix(), dtype=torch.float32, device=device)
-            x = (x.unflatten(-1, (3, 3)) @ rot.transpose(1, 2)[:, None]).flatten(-2)
+            x = (x.unflatten(-1, (-1, 3)) @ rot.transpose(1, 2)[:, None]).flatten(-2)
             x = (x - mu_t) / sd_t + 0.05 * torch.randn_like(x)
             err = (net(x) - y).norm(dim=-1).mean(-1)
             loss = (err * m).sum() / m.sum()

@@ -101,13 +101,31 @@ def attitude(df, t):
     return Slerp(tw, q)(np.clip(t, tw[0], tw[-1])).as_matrix()
 
 
+def level_attitude(df, t):
+    """(T, 9) attitude rows, from the watch alone: CoreMotion's gravity-aligned reference turned about the
+    vertical so the take's mean forearm (FOREARM_W) heading is +x. Fencing points down the piste, so that
+    heading stands in for the body's, which the watch can't see. The rows are the watch axes' components
+    and rotate with the strap like the IMU vectors."""
+    R = attitude(df, t)
+    f = R @ FOREARM_W
+    psi = np.angle(np.mean(np.exp(1j * np.arctan2(f[:, 1], f[:, 0]))))
+    c, s = np.cos(psi), np.sin(psi)
+    Rz = np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+    return (Rz @ R).reshape(len(t), 9).astype(np.float32)
+
+
+def model_input(df, t):
+    """(T, 18) pose-model input at watch times t: imu_at, then level_attitude."""
+    return np.concatenate([imu_at(df, t), level_attitude(df, t)], 1)
+
+
 def pair(watch_path, npz_path, offset=None, hand="right"):
     """Align a watch take with its video poses.
 
     offset: watch time of video t=0, if known; otherwise tap vs forearm peak. Either way it is then refined.
-    Returns a dict: t (T,) watch seconds; imu (T, 9) gyro rad/s, user accel g, gravity g, all in the watch
-    frame; pose (T, J, 3) metres, pelvis-relative in the heading frame; root (T, 3) pelvis in the heading
-    frame; R heading-frame rotation (camera -> heading); Q camera <- watch reference and forearm the
+    Returns a dict: t (T,) watch seconds; imu (T, 18) model_input: gyro rad/s, user accel g, gravity g, all
+    in the watch frame, then the levelled attitude rows; pose (T, J, 3) metres, pelvis-relative in the heading
+    frame; root (T, 3) pelvis in the heading frame; R heading-frame rotation (camera -> heading); Q camera <- watch reference and forearm the
     watch-frame forearm axis (watch_to_camera); valid (T,) pose present; offset, coarse, peak (correlation
     at the chosen offset); tap (watch seconds).
     """
@@ -128,7 +146,7 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     t0, t1 = max(tw[0], tv[0]), min(tw[-1], tv[-1])
     t = np.arange(np.ceil(t0 * RATE), np.floor(t1 * RATE) + 1) / RATE
 
-    imu = imu_at(df, t)
+    imu = model_input(df, t)
 
     # Linear interpolation between video frames; a sample is valid only if both neighbours are.
     x = (t - off) * fps

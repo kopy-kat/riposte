@@ -15,7 +15,9 @@ from model.train import report, run_fold
 OFFSET = -6.213  # watch time of video t=0: the watch starts 6.2 s after the camera
 FPS, WATCH_HZ, VIDEO_S, WATCH_S = 59.94, 100.0, 40.0, 32.0
 TAP_V = 8.5  # forearm flick, video seconds; the watch feels the impact 0.1 s later
-MOUNT = Rotation.from_euler("xyz", [0.4, -0.3, 1.1])
+# Watch -> wrist frame. The wrist frame has the forearm along +x; a real watch case has it along -x, give or
+# take a strap tilt (model.pairs.FOREARM_W), and the levelling fit starts from that.
+MOUNT = Rotation.from_euler("z", np.pi) * Rotation.from_euler("xyz", [0.2, -0.15, 0.1])
 rng = np.random.default_rng(0)
 THRUSTS = np.sort(rng.uniform(13, 39, 40))
 
@@ -110,7 +112,7 @@ def write_watch(d, yaw=0.3):
     gyr += n.normal(0, 0.02, gyr.shape)
     acc += n.normal(0, 0.01, acc.shape)
     acc[np.argmin(abs(tw - (TAP_V + 0.1 + OFFSET)))] += [0.3, 3.0, 0.5]
-    q = s0.as_quat(scalar_first=True)
+    q = (Rotation.from_euler("x", -90, degrees=True) * s0).as_quat(scalar_first=True)  # CoreMotion reference: z up, camera y down
     cols = {"time": (1.7e9 + tw) * 1e9, "seconds_elapsed": tw}
     for i, a in enumerate("XYZ"):
         cols[f"rotationRate{a}"], cols[f"gravity{a}"], cols[f"acceleration{a}"] = gyr[:, i], grav[:, i], acc[:, i]
