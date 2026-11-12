@@ -56,6 +56,9 @@ def frames(video: str, start: int, stop: int, stride: int):
             yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+DETECTOR = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
+
+
 @app.cls(gpu=["L4", "A10G", "L40S", "A100-40GB", "A100-80GB", "H100"], volumes={"/cache": cache}, secrets=[modal.Secret.from_name("huggingface")],
          timeout=1800, max_containers=10)
 class Sam3D:
@@ -64,6 +67,26 @@ class Sam3D:
         import sys
 
         sys.path.insert(0, "/sam3d")
+        # dl.fbaipublicfiles.com serves an expired certificate, so detectron2's own download of the detector
+        # checkpoint fails. Fetch it once without verification, check it against the hash prefix in its name,
+        # and keep it on the volume where iopath looks for its cache.
+        import hashlib
+        import os
+        import ssl
+        import urllib.request
+
+        os.environ["FVCORE_CACHE"] = "/cache/iopath"
+        cache.reload()
+        ck = Path("/cache/iopath") / DETECTOR.split(".com/")[1]
+        if not ck.exists():
+            data = urllib.request.urlopen(DETECTOR, context=ssl._create_unverified_context()).read()
+            if not hashlib.sha256(data).hexdigest().startswith(ck.stem.rsplit("_", 1)[1]):
+                raise ValueError("detector checkpoint does not match the hash in its name")
+            ck.parent.mkdir(parents=True, exist_ok=True)
+            tmp = ck.with_suffix(".part")
+            tmp.write_bytes(data)
+            tmp.rename(ck)
+            cache.commit()
         from notebook.utils import setup_sam_3d_body
 
         self.est = setup_sam_3d_body(hf_repo_id="facebook/sam-3d-body-dinov3", detector_name="vitdet", fov_name="moge2")
