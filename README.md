@@ -9,14 +9,14 @@ Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan 
 ## How it works
 
 1. Sensor Logger records the watch's IMU at 100 Hz while an iPhone films side-on (`imu/load.py`).
-2. A wrist tap syncs the two streams to a frame (`imu/sync.py`, `model/pairs.py`).
+2. A wrist tap syncs the streams (`imu/sync.py`, `model/pairs.py`).
 3. SAM 3D Body on Modal GPUs turns each video frame into the 3D training target (`pose/sam3d_modal.py`).
 4. A bidirectional GRU maps 2 s windows of wrist IMU and attitude to 30 joints relative to the pelvis. It trains on 21 minutes of my fencing with strap-rotation augmentation (`model/train.py`).
 5. The blade comes from the watch's attitude, fitted to the training video's blade (`imu/blade_video.py`; the fit ships in `sample/`). Moves and their timing are read off the predicted pose (`analysis/moves.py`).
 
 ## How to run
 
-Reproduce the held-out numbers from the watch alone:
+Reproduce the held-out numbers:
 
 ```sh
 uv sync
@@ -41,11 +41,12 @@ On a 4-minute take held out from training:
 | watch model | **61 mm** (arm 62, legs 67) |
 | nearest-neighbour retrieval (`model.train`) | 87 mm |
 | average pose | 106 mm |
+| pretrained MobilePoser, watch only, its 12 shared joints (`eval/mobileposer/run.py`) | 159 mm (riposte 58) |
 
 - Cross-validated over the 8 training takes: 58 mm.
 - From the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms), median onset within 33 ms and 67 ms of the video's.
 - Hand speed per rep, straight from the accelerometer, ranks reps as the video does: ρ 0.90 over 13 lunges, 0.74 over 20 thrusts. Onset-to-peak time and lunge depth don't (ρ 0.34, 0.19), so they're medians only.
-- The held-out take is free shadow-fencing, most training takes drills. Without the other free take, it gets 78 mm.
+- Without the other free-fencing take in training: 78 mm.
 - Blade: 4.1° median image-angle error (p90 11°) against the video's, vs 18° along the forearm.
 
 ## What's faked or mocked
