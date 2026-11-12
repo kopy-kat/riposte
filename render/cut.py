@@ -22,6 +22,21 @@ MINT = STOPS[0].astype(np.uint8)
 FADE = 1.0
 NAME = {"lunge": "Lunge", "extension": "Thrust"}
 HOLD = 1.2  # seconds a move's name stays up after its peak
+VOICE = "Daniel"
+# (start second in the finished cut, line). Every number is one model.predict prints for the sample take.
+NARRATION = [
+    (0.3, "Riposte. One Apple Watch on the weapon wrist, and no camera."),
+    (5.0, "This fencer is reconstructed from the watch's motion sensors alone: thirty joints, and the direction of "
+          "the blade. The model is a small recurrent network, trained on twenty-one minutes of my own fencing, "
+          "with phone video as the teacher."),
+    (19.5, "It reads lunges and thrusts off the predicted pose. On a take it never saw, it found all thirteen "
+           "lunges, and twenty of the twenty-two thrusts."),
+    (32.0, "Here are the same seconds against the pose from video of that held-out take, in white. Colour shows "
+           "the error on each limb. The blade is within four degrees, median, of the blade seen in the video."),
+    (46.0, "The limits: one fencer, one room. The reference is a video pose model, not motion capture. And "
+           "thrusts at full extension are the weak spot."),
+    (57.0, "Sixty-one millimetres mean joint error on the held-out take. The average pose scores one hundred and six."),
+]
 
 
 def font(size, weight="Light"):
@@ -90,6 +105,19 @@ def watch_only(frames, pose):
         yield img
 
 
+def narrate(silent, out, tmp):
+    """Mux the spoken NARRATION onto the silent cut."""
+    clips = []
+    for i, (_, line) in enumerate(NARRATION):
+        clips.append(tmp / f"line{i}.aiff")
+        subprocess.run(["say", "-v", VOICE, "-o", str(clips[-1]), line], check=True)
+    delay = ";".join(f"[{i + 1}:a]adelay={int(t * 1000)}:all=1[a{i}]" for i, (t, _) in enumerate(NARRATION))
+    mix = "".join(f"[a{i}]" for i in range(len(clips))) + f"amix=inputs={len(clips)}:normalize=0[a]"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(silent), *[a for c in clips for a in ("-i", str(c))],
+                    "-filter_complex", delay + ";" + mix, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac",
+                    "-b:a", "128k", "-movflags", "+faststart", out], check=True)
+
+
 def main():
     frames, deviation, watch, out = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
     tmp = Path(tempfile.mkdtemp())
@@ -112,7 +140,8 @@ def main():
     norm = ";".join(f"[{i}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[v{i}]" for i in range(len(parts)))
     subprocess.run(["ffmpeg", "-v", "error", "-y", *[a for p in parts for a in ("-i", str(p))], "-filter_complex",
                     norm + ";" + ";".join(chain), "-map", prev, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-                    "-movflags", "+faststart", out], check=True)
+                    str(tmp / "silent.mp4")], check=True)
+    narrate(tmp / "silent.mp4", out, tmp)
     print(out)
 
 
