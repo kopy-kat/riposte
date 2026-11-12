@@ -1,8 +1,8 @@
 # riposte
 
-From one Apple Watch on the weapon wrist, riposte times each lunge and thrust, points the épée, and reconstructs the whole fencer in 3D. No camera at inference. It's built for fencers drilling alone: the onset-to-peak time of every lunge in a drill set, with no coach watching.
+From one Apple Watch on the weapon wrist, riposte points the épée, reconstructs the whole fencer in 3D, and times each lunge and thrust. No camera at inference. It's built for fencers drilling alone: the onset-to-peak time of every lunge in a drill set.
 
-[IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday full-body pose from consumer IMUs, with no blade or move timing. riposte is trained on fencing, with targets from my own iPhone video.
+Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan et al. 2026](https://arxiv.org/abs/2606.22876)) reconstruct the swing and its events but not the club. [IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday pose. riposte recovers the blade, works on fencing, and trains on its user's own phone video.
 
 [riposte.mp4](riposte.mp4): the watch-only pose, then the same seconds against the pose from video the model never saw (white), coloured by error.
 
