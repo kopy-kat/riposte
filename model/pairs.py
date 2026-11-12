@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 from scipy.signal import butter, savgol_filter, sosfiltfilt
+from scipy.spatial.transform import Rotation, Slerp
 
 from imu.load import load_sensor_logger
 from imu.sync import clock_offset, find_tap, xcorr_offset
@@ -21,6 +22,8 @@ L_HIP, R_HIP = 9, 10
 ARM = [6, ELBOW_KP["right"], WRIST_KP["right"]]  # right shoulder, elbow, wrist: the weapon arm
 LEGS = list(range(9, 21))  # hips, knees, ankles, feet
 IMU_COLS = ["gyr_x", "gyr_y", "gyr_z", "acc_x", "acc_y", "acc_z", "grav_x", "grav_y", "grav_z"]
+# Elbow->wrist in the watch frame: the case's -x axis, within 18 deg on every take.
+FOREARM_W = np.array([-1.0, 0.0, 0.0])
 
 
 def coarse_offset(df, sy, search_s=20.0):
@@ -50,18 +53,52 @@ def fine_offset(df, sy, coarse, max_lag_s=1.5):
     return off, peak
 
 
-def heading_frame(kp_cam, valid):
+def watch_to_camera(fore_cam, R_w, scale_deg=10.0, iters=20):
+    """Rotation camera <- CoreMotion reference (z up) aligning the video forearm directions with the watch's.
+
+    Robust Wahba over frames: fore_cam (T, 3) elbow->wrist in the camera, R_w (T, 3, 3) ref <- watch.
+    Its z column is gravity's up in the camera, whatever the camera's tilt. Also returns the forearm axis
+    in the watch frame, starting from FOREARM_W.
+    """
+    from imu.calib import _proj
+
+    u = fore_cam / np.linalg.norm(fore_cam, axis=1, keepdims=True)
+    f, w = FOREARM_W, np.ones(len(u))
+    for _ in range(iters):
+        v = R_w @ f
+        Q = _proj(np.einsum("t,ti,tj->ij", w, u, v))
+        r = np.arccos(np.clip((u * (v @ Q.T)).sum(1), -1, 1))
+        w = 1 / (1 + (r / np.radians(scale_deg)) ** 2)
+        # The strap sits differently each take, so the forearm axis in the watch frame is refitted too.
+        f = np.einsum("t,tji,kj,tk->i", w, R_w, Q, u)
+        f /= np.linalg.norm(f)
+    return Q, f
+
+
+def heading_frame(kp_cam, valid, up):
     """Rotation into a right-handed (right, up, back) body frame, one heading for the whole take.
 
-    Up is camera -y (assumes a roughly level camera, as imu.synth does); lateral is the median
-    left->right hip direction flattened onto the floor. One heading per take keeps the pelvis yaw in the
-    targets while removing camera placement.
+    up: gravity's up in the camera frame; lateral is the median left->right hip direction flattened onto
+    the floor. One heading per take keeps the pelvis yaw in the targets while removing camera placement.
     """
-    up = np.array([0.0, -1.0, 0.0])
     hip = np.nanmedian((kp_cam[valid, R_HIP] - kp_cam[valid, L_HIP]), axis=0)
     lat = hip - (hip @ up) * up
     lat /= np.linalg.norm(lat)
     return np.stack([lat, up, np.cross(lat, up)])
+
+
+def imu_at(df, t):
+    """(T, 9) model input at watch times t: IMU_COLS, low-passed for the 30 Hz grid."""
+    raw = sosfiltfilt(butter(4, 0.4 * RATE, fs=df.attrs["rate_hz"], output="sos"), df[IMU_COLS].to_numpy(), axis=0)
+    tw = df.index.to_numpy()
+    return np.stack([np.interp(t, tw, raw[:, k]) for k in range(raw.shape[1])], 1)
+
+
+def attitude(df, t):
+    """(T, 3, 3) CoreMotion attitude, reference <- watch, at watch times t (held at the recording's ends)."""
+    tw = df.index.to_numpy()
+    q = Rotation.from_quat(df[["qw", "qx", "qy", "qz"]].to_numpy(), scalar_first=True)
+    return Slerp(tw, q)(np.clip(t, tw[0], tw[-1])).as_matrix()
 
 
 def pair(watch_path, npz_path, offset=None, hand="right"):
@@ -70,8 +107,9 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     offset: watch time of video t=0, if known; otherwise tap vs forearm peak. Either way it is then refined.
     Returns a dict: t (T,) watch seconds; imu (T, 9) gyro rad/s, user accel g, gravity g, all in the watch
     frame; pose (T, J, 3) metres, pelvis-relative in the heading frame; root (T, 3) pelvis in the heading
-    frame; R heading-frame rotation (camera -> heading); valid (T,) pose present; offset, coarse, peak (correlation at the chosen offset); tap (watch
-    seconds).
+    frame; R heading-frame rotation (camera -> heading); Q camera <- watch reference and forearm the
+    watch-frame forearm axis (watch_to_camera); valid (T,) pose present; offset, coarse, peak (correlation
+    at the chosen offset); tap (watch seconds).
     """
     df = load_sensor_logger(watch_path)
     sy = synth(npz_path, hand)
@@ -90,10 +128,7 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     t0, t1 = max(tw[0], tv[0]), min(tw[-1], tv[-1])
     t = np.arange(np.ceil(t0 * RATE), np.floor(t1 * RATE) + 1) / RATE
 
-    rate = df.attrs["rate_hz"]
-    raw = df[IMU_COLS].to_numpy()
-    raw = sosfiltfilt(butter(4, 0.4 * RATE, fs=rate, output="sos"), raw, axis=0)  # anti-alias before 30 Hz
-    imu = np.stack([np.interp(t, tw, raw[:, k]) for k in range(raw.shape[1])], 1)
+    imu = imu_at(df, t)
 
     # Linear interpolation between video frames; a sample is valid only if both neighbours are.
     x = (t - off) * fps
@@ -103,12 +138,15 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     kp_t = np.where(valid[:, None, None], (1 - f) * np.nan_to_num(kp[i0]) + f * np.nan_to_num(kp[i0 + 1]), np.nan)
 
     jl, jr = JOINTS.index(L_HIP), JOINTS.index(R_HIP)
-    R = heading_frame(kp_t, valid)
+    R_w = attitude(df, t)
+    fore = kp_t[:, JOINTS.index(WRIST_KP[hand])] - kp_t[:, JOINTS.index(ELBOW_KP[hand])]
+    Q, forearm = watch_to_camera(fore[valid], R_w[valid])
+    R = heading_frame(kp_t, valid, Q[:, 2])
     pelvis = (kp_t[:, jl] + kp_t[:, jr]) / 2
     pose = (kp_t - pelvis[:, None]) @ R.T
     root = pelvis @ R.T
     return dict(t=t, imu=imu.astype(np.float32), pose=pose.astype(np.float32), root=root.astype(np.float32),
-                R=R, valid=valid, offset=off, coarse=coarse, peak=peak, tap=find_tap(df))
+                R=R, Q=Q, forearm=forearm, valid=valid, offset=off, coarse=coarse, peak=peak, tap=find_tap(df))
 
 
 if __name__ == "__main__":

@@ -1,16 +1,19 @@
 """The blade's image direction found in the video, and the watch-frame blade direction fitted to it.
 
-    uv run python -m imu.blade_video <watch dir> <npz> <video30.mp4>
+    uv run python -m imu.blade_video data/processed/blade.npz <watch dir>,<npz>,<video30.mp4>[,offset] ...
+fits one blade model over the given takes for the watch-only render (watch_blade).
 
 The blade is a thin dark line against a lighter background: from the grip, score rays at each image
 angle by how much darker the ray is than both its sides, and keep the best angle where it stands out.
 """
 
 import argparse
+import json
 import subprocess
+from pathlib import Path
 
 import numpy as np
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import gaussian_filter1d, map_coordinates
 from scipy.optimize import least_squares
 
 from imu.calib import KNUCKLE_KP, calibrate, heuristic_axis
@@ -73,11 +76,14 @@ def image_angle(K, grip, axis, length=0.9):
     return np.arctan2(v[:, 1], v[:, 0])
 
 
-def fit_b(c, K, grip, obs, w):
-    """Watch-frame blade direction b whose projected angle matches the observed blade angle."""
+def fit_b(MA, K, grip, obs, w):
+    """Watch-frame blade direction b whose projected angle matches the observed blade angle.
+
+    MA: (T, 3, 3) camera <- watch per frame.
+    """
     def axis(x):
         b = np.array([np.cos(x[0]) * np.cos(x[1]), np.sin(x[0]) * np.cos(x[1]), np.sin(x[1])])
-        return np.einsum("ij,tjk,k->ti", c["A"], c["R_w"], b), b
+        return MA @ b, b
 
     def res(x):
         phi = image_angle(K, grip, axis(x)[0])
@@ -94,15 +100,10 @@ def fit(watch, npz, video, hand="right", offset=None):
     d = np.load(npz)
     K = d["cam_int"].reshape(-1, 3, 3)[0]
     grip = d["pred_keypoints_3d"][:, KNUCKLE_KP[hand]].astype(float) + d["pred_cam_t"].astype(float)
-    import json
-
-    st = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                                    "stream=width,height", "-of", "json", video], capture_output=True, check=True).stdout)
-    width, height = st["streams"][0]["width"], st["streams"][0]["height"]
-    obs, conf = detect(video, project(K, grip), width, height)
+    obs, conf = detections(npz, video, project(K, grip))
     c = calibrate(watch, npz, hand, offset)
     ok = c["valid"] & np.isfinite(obs) & np.isfinite(grip).all(1) & (conf > np.percentile(conf[conf > 0], 50))
-    b = fit_b({**c, "R_w": c["R_w"][ok]}, K, grip[ok], obs[ok], np.ones(ok.sum()))
+    b = fit_b(np.einsum("ij,tjk->tik", c["A"], c["R_w"][ok]), K, grip[ok], obs[ok], np.ones(ok.sum()))
 
     def err(axis):
         e = np.degrees(np.abs((image_angle(K, grip[ok], axis[ok]) - obs[ok] + np.pi) % (2 * np.pi) - np.pi))
@@ -115,11 +116,123 @@ def fit(watch, npz, video, hand="right", offset=None):
     return b
 
 
+def detections(npz, video, grip_px):
+    """detect() over the video, cached next to the npz as <take>.blade.npz."""
+    cache = Path(npz.replace(".sam3d.npz", ".blade.npz"))
+    if not cache.exists():
+        st = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                        "stream=width,height", "-of", "json", video], capture_output=True, check=True).stdout)
+        obs, conf = detect(video, grip_px, st["streams"][0]["width"], st["streams"][0]["height"])
+        np.savez(cache, obs=obs, conf=conf)
+    d = np.load(cache)
+    return d["obs"], d["conf"]
+
+
+LAGS = (-0.2, -0.1, 0.0, 0.1, 0.2)  # s of watch input either side of a frame for the b(t) correction
+RIDGE = 1e-2
+
+
+def lagged(imu, rate):
+    """(T, 9 * len(LAGS)) b(t) inputs from model.pairs.imu_at rows sampled at `rate`."""
+    n = len(imu)
+    return np.concatenate([imu[np.clip(np.arange(n) + round(l * rate), 0, n - 1)] for l in LAGS], 1)
+
+
+def tangent(b):
+    e1 = np.cross(b, [0.0, 0.0, 1.0])
+    e1 /= np.linalg.norm(e1)
+    return e1, np.cross(b, e1)
+
+
+def bent(m, x):
+    """b(t), (T, 3): the model's b turned by its ridge correction (radians along tangent(b)) for inputs x."""
+    d = np.c_[(x - m["mu"]) / m["sd"], np.ones(len(x))] @ m["W"]
+    e1, e2 = tangent(m["b"])
+    v = m["b"] + d[:, :1] * e1 + d[:, 1:] * e2
+    return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+
+def fit_model(specs, per_take=1500, clip=0.6):
+    """One watch-frame blade direction b over all the takes, each in its own watch_to_camera frame, and a
+    ridge map from the watch input to b(t)'s turn away from it. Returns the npz fields watch_blade reads.
+
+    specs: "watch,npz,video[,offset]". The turn is fitted to image-angle residuals through their Jacobian,
+    clipped at `clip` rad so detection blunders don't set it.
+    """
+    from imu.load import load_sensor_logger
+    from model.pairs import attitude, imu_at, pair
+
+    rng = np.random.default_rng(0)
+    MA, grip, obs, x, forearm = [], [], [], [], []
+    for spec in specs:
+        w, n, v, *off = spec.split(",")
+        p = pair(w, n, offset=float(off[0]) if off else None)
+        d = np.load(n)
+        K = d["cam_int"].reshape(-1, 3, 3)[0]
+        g = d["pred_keypoints_3d"][:, KNUCKLE_KP["right"]].astype(float) + d["pred_cam_t"].astype(float)
+        o, conf = detections(n, v, project(K, g))
+        df = load_sensor_logger(w)
+        fps = float(d["fps"])
+        tv = np.arange(len(o)) / fps + p["offset"]
+        tw = df.index.to_numpy()
+        ok = (d["found"].astype(bool) & (tv >= tw[0]) & (tv <= tw[-1]) & np.isfinite(o) & np.isfinite(g).all(1)
+              & (conf > np.percentile(conf[conf > 0], 50)))
+        i = np.sort(rng.choice(np.flatnonzero(ok), min(per_take, ok.sum()), replace=False))
+        MA.append(np.einsum("ij,tjk->tik", p["Q"], attitude(df, tv[i])))
+        grip.append(g[i])
+        obs.append(o[i])
+        x.append(lagged(imu_at(df, tv), fps)[i])
+        forearm.append(p["forearm"])
+    MA, grip, obs, x = (np.concatenate(a) for a in (MA, grip, obs, x))
+    # fx = fy in every take, so the blade's image angle does not depend on K: one identity K serves all.
+    K = np.eye(3)
+    b = fit_b(MA, K, grip, obs, np.ones(len(obs)))
+    ang = lambda bv: image_angle(K, grip, MA @ bv)
+    e = np.clip(np.angle(np.exp(1j * (ang(b) - obs))), -clip, clip)
+    e1, e2 = tangent(b)
+    J = np.stack([np.angle(np.exp(1j * (ang(b + 1e-3 * u) - ang(b - 1e-3 * u)))) / 2e-3 for u in (e1, e2)], 1)
+    mu, sd = x.mean(0), x.std(0) + 1e-6
+    F = np.c_[(x - mu) / sd, np.ones(len(x))]
+    X = np.c_[J[:, :1] * F, J[:, 1:] * F]
+    W = np.linalg.solve(X.T @ X + RIDGE * len(e) * np.eye(X.shape[1]), X.T @ -e).reshape(2, -1).T
+    f = np.mean(forearm, 0)
+    return {"b": b, "forearm": f / np.linalg.norm(f), "W": W, "mu": mu, "sd": sd}
+
+
+def watch_blade(m, watch, t, pose, hand="right"):
+    """Blade direction (T, 3) in the watch-only pose's body frame (right, up, back) at watch times t, from
+    the watch alone: m is a fit_model() result, pose the predicted (T, J, 3) model.pairs.JOINTS.
+
+    The body frame's up is gravity (model.pairs.heading_frame), so only its heading is unknown: one angle
+    for the take, turning the watch's forearm axis about up onto the predicted forearm.
+    """
+    from imu.load import load_sensor_logger
+    from imu.synth import ELBOW_KP, WRIST_KP
+    from model.pairs import JOINTS, RATE, attitude, imu_at
+
+    df = load_sensor_logger(watch)
+    R_w = attitude(df, t)
+    C = np.array([[1.0, 0, 0], [0, 0, 1], [0, -1, 0]])  # reference (x, y, z up) -> body axes at zero heading
+    u = pose[:, JOINTS.index(WRIST_KP[hand])] - pose[:, JOINTS.index(ELBOW_KP[hand])]
+    u = u / np.linalg.norm(u, axis=1, keepdims=True)
+    v = np.einsum("ij,tjk,k->ti", C, R_w, m["forearm"])
+    # Heading is only defined where both forearms are far from vertical.
+    flat = (np.hypot(u[:, 0], u[:, 2]) > 0.5) & (np.hypot(v[:, 0], v[:, 2]) > 0.5)
+    d = np.arctan2(u[flat, 0], u[flat, 2]) - np.arctan2(v[flat, 0], v[flat, 2])
+    psi = np.angle(np.exp(1j * d).mean())
+    psi += np.median(np.angle(np.exp(1j * (d - psi))))
+    c, s = np.cos(psi), np.sin(psi)
+    Y = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    b = bent(m, lagged(imu_at(df, t), RATE))
+    # The correction jitters frame to frame, zigzagging the tip; smoothing it also scores slightly better.
+    a = gaussian_filter1d(np.einsum("ij,jk,tkl,tl->ti", Y, C, R_w, b), 2 * len(t) / (t[-1] - t[0]) / RATE, axis=0)
+    return a / np.linalg.norm(a, axis=1, keepdims=True)
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("watch")
-    p.add_argument("npz")
-    p.add_argument("video")
-    p.add_argument("--offset", type=float, default=None)
+    p.add_argument("out")
+    p.add_argument("takes", nargs="+", help="watch,npz,video[,offset]")
     a = p.parse_args()
-    print("b", np.round(fit(a.watch, a.npz, a.video, offset=a.offset), 3))
+    np.savez(a.out, **fit_model(a.takes))
+    print(a.out)

@@ -1,6 +1,6 @@
 """Builds and renders the overlay scene headless.
 
-    /Applications/Blender.app/Contents/MacOS/Blender -b -P render/scene.py -- <take dir> <width> <height> [last frame]
+    /Applications/Blender.app/Contents/MacOS/Blender -b -P render/scene.py -- <take dir> <width> <height> [last frame [first frame]]
 renders RGBA frames to <take dir>/frames/, then composite.sh lays them over the video.
     ... -- <take dir> <width> <height> --blend <video>
 instead saves <take dir>/scene.blend with the video as the camera background, for viewing in Blender.
@@ -19,12 +19,13 @@ if "--blend" in args:
     args = args[:args.index("--blend")]
 take, width, height = Path(args[0]).resolve(), int(args[1]), int(args[2])
 last = int(args[3]) if len(args) > 3 else None
+first = int(args[4]) if len(args) > 4 else 1
 s = json.loads((take / "scene.json").read_text())
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.render.fps = round(s["fps"])
-scene.frame_start, scene.frame_end = 1, last or s["frames"]
+scene.frame_start, scene.frame_end = first, last or s["frames"]
 scene.render.resolution_x, scene.render.resolution_y = width, height
 scene.render.film_transparent = True
 scene.render.image_settings.file_format = "PNG"
@@ -76,17 +77,19 @@ def cached_mesh(name, rest, faces, pc2, mat):
     return ob
 
 
-body = cached_mesh("body", s["body_rest"], s["body_faces"], "body.pc2",
-                   material("body", (0.55, 0.75, 1.0), 0.45, 1.2))
-for p in body.data.polygons:
-    p.use_smooth = True
+if "body_rest" in s:
+    body = cached_mesh("body", s["body_rest"], s["body_faces"], "body.pc2",
+                       material("body", (0.55, 0.75, 1.0), 0.45, 1.2))
+    for p in body.data.polygons:
+        p.use_smooth = True
 
-blade_faces = [(0, 1, 3, 2), (4, 5, 7, 6)]
-cached_mesh("blade", s["blade_rest"], blade_faces, "blade.pc2", material("blade", (0.9, 0.9, 0.95), 1.0, 2.0))
+if "blade_rest" in s:
+    blade_faces = [(0, 1, 3, 2), (4, 5, 7, 6)]
+    cached_mesh("blade", s["blade_rest"], blade_faces, "blade.pc2", material("blade", (0.9, 0.9, 0.95), 1.0, 2.0))
 
-n = s["trail_frames"]
-trail_faces = [(i, i + 1, n + i + 1, n + i) for i in range(n - 1)]
-cached_mesh("trail", s["trail_rest"], trail_faces, "trail.pc2", material("trail", (1.0, 0.35, 0.1), 0.9, 6.0))
+    n = s["trail_frames"]
+    trail_faces = [(i, i + 1, n + i + 1, n + i) for i in range(n - 1)]
+    cached_mesh("trail", s["trail_rest"], trail_faces, "trail.pc2", material("trail", (1.0, 0.35, 0.1), 0.9, 6.0))
 
 if "skeleton_rest" in s:
     cached_mesh("skeleton", s["skeleton_rest"], s["skeleton_faces"], "skeleton.pc2",

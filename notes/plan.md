@@ -9,16 +9,12 @@ Reconstruct a 3D épée fencer from wrist IMU alone, shown next to synced video 
 - A borrowed phone for a second camera, or a hip IMU in a running belt, is available tomorrow.
 
 ## Pipeline
-1. A watchOS recorder: an HKWorkoutSession plus `CMBatchedSensorManager` (800 Hz accelerometer, 200 Hz device motion; Series 8 support per WWDC23 notes, unconfirmed on the device). The file transfers to the iPhone, then the Mac.
-2. Video: the iPhone films side-on at 120–240 fps. A wrist tap at the start of each take syncs the streams. Hold en garde for 3 s per take to calibrate the axes.
-3. Ground truth: GVHMR (or WHAM) on Modal produces world-grounded SMPL per frame.
-4. Model:
-   - Retrieval first: classify and segment the actions from the IMU, then play the recorded 3D clips time-warped to the watch's timing.
-   - Generative stretch: fine-tune MobilePoser (wrist-only) on paired data, pretrained on DIP-IMU, with AMASS synthetic IMU as needed.
+1. Watch IMU: Sensor Logger on watchOS (one combined CSV), loaded by `imu/load.py`.
+2. Video: the iPhone films side-on. A wrist tap at the start of each take, seeded by the iPhone's capture-start tag, syncs the streams (`imu/sync.py`).
+3. Ground truth: SAM 3D Body on Modal, run per frame in parallel chunks (`pose/sam3d_modal.py`).
+4. Model: a GRU from wrist IMU to full-body pose (`model/train.py`), with a kNN retrieval baseline, synthetic-IMU augmentation and held-out test takes.
 5. Output: a three.js or Blender render of the avatar beside the video, plus an error metric on held-out takes.
+6. Watch-only blade: `imu/blade_video.py` fits `data/processed/blade.npz` (a grip direction plus an IMU-driven correction) over the épée takes in `data/takes.txt` (the office takes used a stand-in blade, so leave them out); refit it after adding takes, then `render.prepare --watch-only ... --watch`.
 
 ## Optional data
 FIE épée bouts from YouTube → GVHMR → synthetic wrist IMU, as a fencing motion prior.
-
-## Today, in the office (no épée)
-Build the watch recorder, check the sample rates, put GVHMR on Modal and test it on an office clip, then build the sync and viewer. Use a pen or ruler as a stand-in blade.
