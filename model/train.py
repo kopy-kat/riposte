@@ -92,8 +92,9 @@ def en_garde(p, hold_s=3.0):
 
 
 def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, rot_deg=15.0, n_test=0, seeds=1,
-             hidden=128, causal=False):
-    """With n_test, the last n_test takes are the whole validation set and every other take trains in full."""
+             hidden=128, causal=False, save=None):
+    """With n_test, the last n_test takes are the whole validation set and every other take trains in full.
+    save: path to write the trained nets and their input normalisation, for model.predict."""
     if n_test:
         n_train = len(takes) - n_test
         splits = [(windows(0, len(p["t"]), p["valid"]), (0, 0)) if i < n_train else ([], (0, len(p["t"])))
@@ -115,6 +116,9 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, 
 
     nets = [train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed + s, log, k, rot_deg, hidden, causal)
             for s in range(seeds)]
+    if save:
+        torch.save(dict(nets=[net.state_dict() for net in nets], mu=mu, sd=sd, mean_pose=mean_pose, hidden=hidden,
+                        causal=causal, win=WIN), save)
 
     res = {name: {g: [] for g in GROUPS} for name in ("mean pose", "en garde", "knn", "model")}
     for i, (p, x, (_, (a, b))) in enumerate(zip(takes, xs, splits)):
@@ -181,6 +185,7 @@ def main():
     ap.add_argument("--causal", action="store_true")
     ap.add_argument("--rot", type=float, default=15.0, help="strap-rotation augmentation, degrees")
     ap.add_argument("--seeds", type=int, default=1, help="average this many independently trained models")
+    ap.add_argument("--save", help="with --test: write the trained nets here, for model.predict")
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     a = ap.parse_args()
     global WIN
@@ -195,6 +200,7 @@ def main():
     held_out = [np.full_like(p["pose"], np.nan) for p in takes]
     kw = dict(held_out=held_out, rot_deg=a.rot, seeds=a.seeds, hidden=a.hidden, causal=a.causal)
     if a.test:
+        kw["save"] = a.save
         results = [run_fold(takes, a.folds, 0, a.epochs, a.device, n_test=len(a.test), **kw)]
     else:
         results = [run_fold(takes, a.folds, k, a.epochs, a.device, **kw) for k in range(a.folds)]
