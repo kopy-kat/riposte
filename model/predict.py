@@ -3,7 +3,8 @@
     uv run python -m model.predict sample/demo_watch.zip sample/weights.pt --targets sample/demo_targets.npz
 writes <watch>.watchpose.npz beside the input: the pose, and the blade direction from imu.blade_video's
 fitted model (sample/blade.npz, beside the weights). With --targets (video poses on the same watch-time grid), it
-prints the error and the lunges and thrusts found from the watch against the video's.
+prints the error, the lunges and thrusts found from the watch against the video's, and the blade's image-angle
+error against the blade detected in the video (frames where it was found), next to a blade along the forearm.
 """
 
 import argparse
@@ -14,8 +15,9 @@ import torch
 
 import model.train as train
 from analysis.moves import WATCH_LUNGE_PEAK, events, label, match
-from imu.blade_video import watch_blade
+from imu.blade_video import image_angle, watch_blade
 from imu.load import load_sensor_logger
+from imu.synth import ELBOW_KP, WRIST_KP
 from model.pairs import JOINTS, RATE, model_input
 
 
@@ -57,6 +59,16 @@ def main():
         false = sum(f["kind"] == kind for f in watch) - len(pk)
         print(f"{name}: watch found {len(pk)} of the video's {sum(e['kind'] == kind for e in video)} ({false} false), "
               f"median onset error {onset:.0f} ms")
+
+
+    ok, K, grip = tg["blade_ok"], tg["K"], tg["grip"][tg["blade_ok"]]
+    fore = pred[:, JOINTS.index(WRIST_KP["right"])] - pred[:, JOINTS.index(ELBOW_KP["right"])]
+    errs = []
+    for axis in (blade, fore / np.linalg.norm(fore, axis=1, keepdims=True)):
+        # body frame -> camera is R.T; R is the video's heading frame, used here only to score.
+        e = np.degrees(np.abs(np.angle(np.exp(1j * (image_angle(K, grip, axis[ok] @ tg["R"]) - tg["blade_angle"][ok])))))
+        errs.append(f"{np.median(e):.1f} median, {np.percentile(e, 90):.1f} p90")
+    print(f"blade image-angle error deg over {ok.sum()} frames: watch {errs[0]}; along the forearm {errs[1]}")
 
 
 if __name__ == "__main__":
