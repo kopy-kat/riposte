@@ -46,7 +46,7 @@ On a 4-minute take held out from training:
 
 - Cross-validated over the 8 training takes, the model gets 58 mm.
 - From the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms), median onset within 33 ms and 67 ms of the video's.
-- The held-out take is free shadow-fencing, most training takes drills. Without the other free take in training, it gets 78 mm (legs 88).
+- The held-out take is free shadow-fencing, most training takes drills. Without the other free take, it gets 78 mm (legs 88).
 - Blade: 4.1° median image-angle error (p90 11°) against the video's, vs 18° along the forearm.
 
 ## What's faked or mocked
