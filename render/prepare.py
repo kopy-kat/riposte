@@ -244,8 +244,9 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
     sample N - 1), nothing from the video. The body is render.body's surface on the predicted joints, the
     blade comes from the watch's attitude and the BLADE_MODEL fitted by imu.blade_video.
 
-    The pose is pelvis-relative in the body frame (right, up, back), so the pelvis stays over one spot; each
-    frame is lowered until the lowest point of the body rests on the floor.
+    The pose is pelvis-relative in the body frame (right, up, back); each frame is lowered until the lowest
+    point of the body rests on the floor. With a predicted pelvis track (`root`, same frame) in the watch pose
+    the fencer travels along it; without one the pelvis stays over one spot.
     """
     from scipy.interpolate import CubicSpline
     from scipy.signal import savgol_filter
@@ -271,6 +272,16 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
     verts[..., 2] -= ground[:, None]
     knuckle[:, 2] -= ground
 
+    k = first - 1 - lo
+    follow = None
+    if "root" in w.files:
+        root = world(savgol_filter(fill_gaps(w["root"].astype(np.float32))[lo:last], 9, 2, axis=0))
+        root[:, 2] = 0
+        root -= root[k:].mean(0)  # centred on the piste over the frames shown
+        verts += root[:, None]
+        knuckle += root
+        follow = savgol_filter(root[k:, :2], min(45, (len(root) - k) // 2 * 2 - 1), 2, axis=0)  # what the camera tracks
+
     axis = world(watch_blade(np.load(BLADE_MODEL), watch, w["t"], full, hand).astype(np.float32)[lo:last])
     axis = savgol_filter(axis, 5, 2, axis=0)
     axis /= np.linalg.norm(axis, axis=1, keepdims=True)
@@ -280,7 +291,6 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
     # The trail follows a smoothed tip, sampled between frames: at 30 Hz a fast point leaves a polygon.
     tip = savgol_filter(knuckle + BLADE_M * axis, 9, 3, axis=0)
     path = CubicSpline(np.arange(len(tip)), tip)
-    k = first - 1 - lo
     ages = np.linspace(0, TRAIL_S * RATE, TRAIL_N, dtype=np.float32)
     hist = path(np.clip(np.arange(k, len(tip))[:, None] - ages[None], 0, None)).astype(np.float32)
     trail, trail_faces = tube(hist, np.linspace(TRAIL_R, 0.002, TRAIL_N))
@@ -303,6 +313,8 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
              "blade_rest": blade[k].tolist(), "blade_faces": blade_faces,
              "trail_rest": trail[0].tolist(), "trail_faces": trail_faces,
              "trail_age": np.repeat(ages / ages[-1], 6).tolist()}
+    if follow is not None:
+        scene["follow"] = follow.tolist()
     (out / "scene.json").write_text(json.dumps(scene))
     print(out)
 

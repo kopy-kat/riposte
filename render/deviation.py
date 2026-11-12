@@ -3,11 +3,14 @@
     uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
         data/raw/demo/watch data/processed/cut_deviation.mp4 71.5 89.5
     uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/watch data/processed/cut_over.mp4 33.5 44.5 --over data/raw/demo/video30.mp4
+        data/raw/demo/watch data/processed/cut_over.mp4 33.5 49.5 --over data/raw/demo/video30.mp4 \
+        [--matte data/processed/cut_fencer/matte.mp4 --back pool]
 Without --over there are no video pixels: the video's pose and the blade found in the video (<take>.blade.npz
 from imu.blade_video) are a white ghost on black, and the watch's bones and blade are coloured by how far off
 they are. With --over the watch's skeleton and blade are drawn on the video itself, with everything but the
-fencer and the real blade blurred. Either way the watch skeleton gets the video's pelvis, since the watch can't
+fencer and the real blade blurred. --matte (render.matte's alpha for the same seconds) cuts the fencer out
+properly, and --back then says what goes behind: blur, dim (the room pushed back into the dark), pool (black,
+with the real floor lit under the fencer) or studio (the 3D segment's dark floor and piste). Either way the watch skeleton gets the video's pelvis, since the watch can't
 see where the fencer stands, and the watch's blade starts where imu.blade_video.watch_grip puts it on the
 predicted wrist. Prints the mean per-joint error over the frames drawn.
 """
@@ -17,7 +20,7 @@ import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-from scipy.ndimage import binary_closing, binary_dilation, gaussian_filter
+from scipy.ndimage import binary_closing, binary_dilation, gaussian_filter, grey_closing, zoom as resize
 
 from imu.blade_video import line_shift, watch_blade, watch_grip
 from imu.calib import KNUCKLE_KP
@@ -35,6 +38,9 @@ FADE = 1.0  # render.cut crossfades this clip in and out over a second; keep the
 MASK = 4  # the fencer's cut-out is built at 1/MASK resolution
 BLUR, DIM = 14, 0.72  # the background behind the fencer: Gaussian radius in pixels, brightness
 FONT = "/System/Library/Fonts/SFNS.ttf"
+SOLE = 0.035  # the foot keypoints sit this far above the floor
+STEEL = np.array([205, 208, 214], np.float32)  # the real blade is dark on the wall; on a dark ground it is redrawn light
+FLOOR, PISTE, LINE = (np.array(c, np.float32) for c in ((22, 22, 26), (36, 37, 43), (150, 156, 156)))
 
 
 def colour(err, good=GOOD, bad=BAD):
@@ -60,21 +66,98 @@ def cutout(body, blade, guard_r, w, h):
     ij = ij[(ij[:, 0] >= 0) & (ij[:, 0] < m.shape[1]) & (ij[:, 1] >= 0) & (ij[:, 1] < m.shape[0])]
     m[ij[:, 1], ij[:, 0]] = True
     m = binary_dilation(binary_closing(m, np.ones((5, 5))), np.ones((5, 5)))
-    line = Image.new("L", (m.shape[1], m.shape[0]))
+    m = gaussian_filter((m | band(blade, guard_r, w, h)).astype(np.float32), 1.2)
+    return Image.fromarray((m * 255).astype(np.uint8)).resize((w, h), Image.BILINEAR)
+
+
+def band(blade, guard_r, w, h):
+    """Bool mask at 1/MASK resolution around the real blade and its bell guard."""
+    line = Image.new("L", (w // MASK, h // MASK))
     g = ImageDraw.Draw(line)
     a, b = (tuple(p / MASK) for p in blade)
     g.line([a, b], fill=255, width=5)
-    r = guard_r / MASK
-    g.ellipse([a[0] - r, a[1] - r, a[0] + r, a[1] + r], fill=255)
+    if guard_r:
+        r = guard_r / MASK
+        g.ellipse([a[0] - r, a[1] - r, a[0] + r, a[1] + r], fill=255)
     g.ellipse([b[0] - 3, b[1] - 3, b[0] + 3, b[1] + 3], fill=255)
-    m = gaussian_filter((m | (np.asarray(line) > 0)).astype(np.float32), 1.2)
-    return Image.fromarray((m * 255).astype(np.uint8)).resize((w, h), Image.BILINEAR)
+    return np.asarray(line) > 0
+
+
+def gray_frames(video, n, w, h):
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", video, "-vf", f"scale={w}:{h}", "-frames:v", str(n),
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"], stdout=subprocess.PIPE)
+    for _ in range(n):
+        yield np.frombuffer(p.stdout.read(w * h), np.uint8).reshape(h, w).astype(np.float32) / 255
+
+
+class Floor:
+    """The floor under the fencer as the video's camera sees it: where each pixel's ray meets it, in metres
+    along the piste (rear ankle to front) and across it. up is the heading frame's, the plane sits under the
+    lowest the feet go, and the camera is static, so this is worked out once at half resolution."""
+
+    def __init__(self, K, up, feet, ankles, w, h):
+        self.up = up
+        self.h = np.nanpercentile((feet @ up).min(1), 5) - SOLE
+        along = np.nanmean(ankles, 0)
+        along -= (along @ up) * up
+        self.along = along / np.linalg.norm(along)
+        self.side = np.cross(up, self.along)
+        u, v = np.meshgrid(np.arange(0.5, w, 2), np.arange(0.5, h, 2))
+        ray = np.stack([(u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1], np.ones_like(u)], -1)
+        t = self.h / np.minimum(ray @ up, -1e-3) if self.h < 0 else self.h / np.maximum(ray @ up, 1e-3)
+        self.on = (ray @ up) * np.sign(self.h) > 1e-3  # below the horizon
+        q = ray * t[..., None]
+        self.s, self.l = q @ self.along, q @ self.side
+        # How many metres one (half-resolution) pixel covers, for line edges a pixel soft.
+        self.ds = np.hypot(*np.gradient(self.s)) + 1e-6
+        self.dl = np.hypot(*np.gradient(self.l)) + 1e-6
+        self.size = (w, h)
+
+    def at(self, p):
+        """(along, across) of the floor point under the camera-frame point p."""
+        return p @ self.along, p @ self.side
+
+    def near(self, p, r_along, r_across):
+        """Gaussian falloff on the floor around the point under p; 0 above the horizon."""
+        s, l = self.at(p)
+        return np.where(self.on, np.exp(-((self.s - s) / r_along) ** 2 - ((self.l - l) / r_across) ** 2), 0)
+
+    def full(self, x):
+        return resize(x, (2, 2) + (1,) * (x.ndim - 2), order=1)[:self.size[1], :self.size[0]]
+
+    def piste(self, centre):
+        """The studio floor's colour before lighting: a 1.5 m piste through `centre` with edge and cross lines."""
+        s0, l0 = self.at(centre)
+        l = np.abs(self.l - l0)
+        img = np.where((l < 0.75)[..., None], PISTE, FLOOR)
+        edge = np.clip(0.5 + (0.012 - np.abs(l - 0.75)) / self.dl, 0, 1)
+        marks = np.max([np.clip(0.5 + (0.012 - np.abs(self.s - s0 - x)) / self.ds, 0, 1) for x in (-2, 0, 2)], 0) * (l < 0.75)
+        return img + (LINE - img) * np.maximum(edge, marks)[..., None]
+
+
+def backdrop(back, frame, floor, piste, pelvis, feet):
+    """What goes behind the cut-out fencer in one frame (h, w, 3 float): see the module docstring."""
+    bg = np.array(BG, np.float32)
+    if back == "studio":
+        light = floor.near(pelvis, 2.6, 2.6)
+        shade = 1 - 0.3 * floor.near(pelvis, 0.6, 0.45)
+        for f in feet:  # contact shadows, fading as a foot lifts
+            shade *= 1 - 0.6 * floor.near(f, 0.15, 0.12) * np.clip(1 - ((f @ floor.up) - floor.h - SOLE) / 0.12, 0, 1)
+        return floor.full(bg + (piste - bg) * (light * shade * floor.on)[..., None])
+    pool = floor.full(floor.near(pelvis, 1.5, 0.5))[..., None]
+    if back == "pool":
+        return bg + (frame * 0.9 - bg) * pool
+    h, w = frame.shape[:2]
+    lum = gaussian_filter(frame @ np.array([0.3, 0.59, 0.11], np.float32), 3)[..., None] * np.array([0.21, 0.22, 0.25], np.float32)
+    return lum + (frame * 0.85 - lum) * pool
 
 
 def main():
     args = sys.argv[1:]
     over = args.pop(args.index("--over") + 1) if "--over" in args else None
-    args = [a for a in args if a != "--over"]
+    matte = args.pop(args.index("--matte") + 1) if "--matte" in args else None
+    behind = args.pop(args.index("--back") + 1) if "--back" in args else "blur"
+    args = [a for a in args if a not in ("--over", "--matte", "--back")]
     sam, watch, watch_dir, out = args[:4]
     d, w = np.load(sam), np.load(watch)
     fps = float(d["fps"])
@@ -127,19 +210,42 @@ def main():
         ang = np.where(np.isfinite(seen["obs"]) & (seen["conf"] > 0), seen["obs"],
                        np.arctan2(*(project(tip) - project(guard)).T[::-1]))
         shift = line_shift(over, project(knuckle), ang, range(start, end), W, H)
-        still = None
+        still = ends = None
+        alpha = gray_frames(matte, end - start, W, H) if matte else None
+        if behind != "blur":
+            ok = found[start:end]
+            floor = Floor(K, w["R"][1], true[start:end, 15:21][ok], (true[start:end, 14] - true[start:end, 13])[ok], W, H)
+            piste = floor.piste(pelvis[start:end, 0][ok].mean(0))
     bone_w, blade_w = (3, 3) if over else (5, 4)
     for k in range(start, end):
         img = next(back) if over else Image.new("RGBA", (W, H), BG + (255,))
         if over:
-            if found[k] or still is None:
+            if found[k] or ends is None:
                 dirn, px = np.array([np.cos(ang[k]), np.sin(ang[k])]), K[0, 0] / knuckle[k, 2]
                 on = project(knuckle[k]) + shift[k - start] * np.array([-dirn[1], dirn[0]])
-                still = cutout(project(mesh[k - start]), (on + 0.04 * px * dirn, on + (BLADE_M + 0.06) * px * dirn),
-                               0.085 * px, W, H)
+                ends, guard_r, at = (on + 0.04 * px * dirn, on + (BLADE_M + 0.06) * px * dirn), 0.085 * px, k
+                if not matte:
+                    still = cutout(project(mesh[k - start]), ends, guard_r, W, H)
             soft = img.filter(ImageFilter.GaussianBlur(BLUR)).point(lambda v: v * DIM)
-            soft.putalpha(255)
-            img = Image.composite(img, soft, still)
+            if not matte:
+                soft.putalpha(255)
+                img = Image.composite(img, soft, still)
+            else:
+                rgb = np.asarray(img.convert("RGB"), np.float32)
+                a = np.clip((next(alpha) - 0.1) / 0.8, 0, 1)
+                # The matte keeps the guard but mostly drops the blade, a thin dark line: find it by how much
+                # darker it is than its surroundings.
+                near = gaussian_filter(np.kron(band(ends, 0, W, H), np.ones((MASK, MASK), np.float32)), 2)
+                lum = rgb.mean(-1)
+                dark = np.clip((grey_closing(lum, size=(11, 11)) - lum - 10) / 35, 0, 1) * near
+                if behind == "blur":
+                    mix = np.asarray(soft.convert("RGB"), np.float32)
+                    mix += (rgb - mix) * np.maximum(a, dark)[..., None]
+                else:
+                    mix = backdrop(behind, rgb, floor, piste, pelvis[at, 0], [true[at, 15:18].mean(0), true[at, 18:21].mean(0)])
+                    mix += (rgb - mix) * a[..., None]
+                    mix += (STEEL - mix) * dark[..., None]  # dark steel would vanish on a dark ground
+                img = Image.fromarray(np.clip(mix, 0, 255).astype(np.uint8)).convert("RGBA")
         if found[k]:
             layer = Image.new("RGBA", (W * SS, H * SS))
             g = ImageDraw.Draw(layer)

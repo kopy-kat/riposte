@@ -1,5 +1,5 @@
 """Renders the watch-only fencer from render/prepare.py --watch-only in a studio: a piste, a pool of light,
-and a camera that orbits the fencer once over the frames, side-on at the widest stance.
+and a camera that orbits the fencer once, then stays three-quarters in front, following along the piste.
 
     /Applications/Blender.app/Contents/MacOS/Blender -b -P render/studio.py -- <take dir> <width> <height> [last frame [first frame]]
 writes <take dir>/frames/f_NNNN.png.
@@ -22,6 +22,7 @@ end = int(args[3]) if len(args) > 3 else first + n - 1
 
 MINT = (0.18, 0.86, 0.60)
 RADIUS, HEIGHT, LOOK_AT = 5.3, 1.2, (0.0, 0.0, 0.82)
+ORBIT_S, DRIFT, DRIFT_S = 8.0, math.radians(7), 16.0  # the one orbit; then the hold's sway and its period
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
@@ -248,13 +249,16 @@ def light(name, kind, loc, energy, rgb, size, spot=None, parent=None):
     return ob
 
 
+# The camera, its lights and the pool of light all hang off the target, which follows the fencer along the piste.
 target = bpy.data.objects.new("target", None)
 target.location = LOOK_AT
 scene.collection.objects.link(target)
+follow = s.get("follow") or [(0.0, 0.0)] * n
 # The panels turn with the camera (which starts on the rig's +x): key beside it, mint rim always behind the fencer.
 rig = bpy.data.objects.new("rig", None)
+rig.parent, rig.location = target, (0, 0, -LOOK_AT[2])
 scene.collection.objects.link(rig)
-light("pool", "SPOT", (0, 0, 7.0), 3600, (1.0, 0.96, 0.9), 0.6, math.radians(62))
+light("pool", "SPOT", (0, 0, 7.0 - LOOK_AT[2]), 3600, (1.0, 0.96, 0.9), 0.6, math.radians(62)).parent = target
 light("key", "AREA", (3.5, -2.5, 3.2), 230, (1.0, 0.95, 0.88), 2.5, parent=rig)
 light("rim", "AREA", (-3.5, 2.5, 2.4), 500, MINT, 2.0, parent=rig)
 light("fill", "AREA", (3.0, 3.5, 1.2), 40, (0.6, 0.7, 1.0), 4.0, parent=rig)
@@ -268,14 +272,18 @@ scene.collection.objects.link(cam)
 scene.camera = cam
 c = cam.constraints.new("TRACK_TO")
 c.target, c.track_axis, c.up_axis = target, "TRACK_NEGATIVE_Z", "UP_Y"
-# One full turn, slower into and out of the cut, timed to be side-on, the fencer facing left as the video did,
-# at the widest stance: the lunge is seen square.
-turn = lambda u: 2 * math.pi * (u - 0.5 * math.sin(2 * math.pi * u) / (2 * math.pi))
-square = yaw + math.pi / 2 - turn((s["widest"] - first) / (n - 1))
+# One full turn over the first ORBIT_S seconds, eased in and out, then the camera holds three-quarters in front
+# of the fencer (who faces left, as in the video) with a slow drift.
+home = yaw + math.pi / 2 - math.radians(28)
+orbit = min(ORBIT_S * s["fps"], n - 1)
 for f in range(first, first + n):
-    u = (f - first) / (n - 1)
-    a = square + turn(u)
-    cam.location = Vector((RADIUS * math.cos(a), RADIUS * math.sin(a), HEIGHT + 0.25 * math.sin(2 * math.pi * u)))
+    i = f - first
+    u = min(i / orbit, 1.0)
+    a = home + 2 * math.pi * u * u * (3 - 2 * u) + DRIFT * math.sin(2 * math.pi * max(i - orbit, 0) / (DRIFT_S * s["fps"]))
+    x, y = follow[i]
+    target.location = (x, y, LOOK_AT[2])
+    target.keyframe_insert("location", frame=f)
+    cam.location = Vector((x + RADIUS * math.cos(a), y + RADIUS * math.sin(a), HEIGHT + 0.25 * math.sin(math.pi * u)))
     cam.keyframe_insert("location", frame=f)
     rig.rotation_euler = (0, 0, a)
     rig.keyframe_insert("rotation_euler", frame=f)
