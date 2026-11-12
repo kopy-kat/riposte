@@ -101,17 +101,21 @@ def attitude(df, t):
     return Slerp(tw, q)(np.clip(t, tw[0], tw[-1])).as_matrix()
 
 
-def level_attitude(df, t):
-    """(T, 9) attitude rows, from the watch alone: CoreMotion's gravity-aligned reference turned about the
-    vertical so the take's mean forearm (FOREARM_W) heading is +x. Fencing points down the piste, so that
-    heading stands in for the body's, which the watch can't see. The rows are the watch axes' components
-    and rotate with the strap like the IMU vectors."""
-    R = attitude(df, t)
+def level_frame(R):
+    """Rotation levelled <- CoreMotion reference, from the watch alone: a turn about the vertical that puts
+    the take's mean forearm (FOREARM_W) heading on +x. R (T, 3, 3) is attitude(). Fencing points down the
+    piste, so that heading stands in for the body's, which the watch can't see."""
     f = R @ FOREARM_W
     psi = np.angle(np.mean(np.exp(1j * np.arctan2(f[:, 1], f[:, 0]))))
     c, s = np.cos(psi), np.sin(psi)
-    Rz = np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
-    return (Rz @ R).reshape(len(t), 9).astype(np.float32)
+    return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def level_attitude(df, t):
+    """(T, 9) attitude rows in level_frame. The rows are the watch axes' components and rotate with the
+    strap like the IMU vectors."""
+    R = attitude(df, t)
+    return (level_frame(R) @ R).reshape(len(t), 9).astype(np.float32)
 
 
 def model_input(df, t):
@@ -125,7 +129,8 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     offset: watch time of video t=0, if known; otherwise tap vs forearm peak. Either way it is then refined.
     Returns a dict: t (T,) watch seconds; imu (T, 18) model_input: gyro rad/s, user accel g, gravity g, all
     in the watch frame, then the levelled attitude rows; pose (T, J, 3) metres, pelvis-relative in the heading
-    frame; root (T, 3) pelvis in the heading frame; R heading-frame rotation (camera -> heading); Q camera <- watch reference and forearm the
+    frame; root (T, 3) pelvis in the heading frame; track (T, 3) pelvis in the watch's level_frame (x along the
+    mean forearm heading, z up), the frame a watch-only pelvis prediction can be made in; R heading-frame rotation (camera -> heading); Q camera <- watch reference and forearm the
     watch-frame forearm axis (watch_to_camera); valid (T,) pose present; offset, coarse, peak (correlation
     at the chosen offset); tap (watch seconds).
     """
@@ -163,8 +168,10 @@ def pair(watch_path, npz_path, offset=None, hand="right"):
     pelvis = (kp_t[:, jl] + kp_t[:, jr]) / 2
     pose = (kp_t - pelvis[:, None]) @ R.T
     root = pelvis @ R.T
+    track = pelvis @ Q @ level_frame(R_w).T
     return dict(t=t, imu=imu.astype(np.float32), pose=pose.astype(np.float32), root=root.astype(np.float32),
-                R=R, Q=Q, forearm=forearm, valid=valid, offset=off, coarse=coarse, peak=peak, tap=find_tap(df))
+                track=track.astype(np.float32), R=R, Q=Q, forearm=forearm, valid=valid, offset=off, coarse=coarse,
+                peak=peak, tap=find_tap(df))
 
 
 if __name__ == "__main__":
