@@ -157,27 +157,39 @@ if (take) {
   // No take embedded: live.server is streaming the watch.
   $("top").innerHTML = "Live from the watch<small>Apple Watch only · causal model · pelvis held in place · drag to orbit</small>";
   $("stats").textContent = "waiting for the watch…";
-  let msg = null, lat = [], age = [], n = 0, since = performance.now(), fps = 0;
-  new EventSource("/events").onmessage = e => { msg = JSON.parse(e.data); n++; };
+  // Batches arrive about once a second with every 30 Hz frame in them. Frames are played out on the watch's
+  // clock, one batch interval plus a margin behind arrival, so motion is even and a late batch holds the pose.
+  let buf = [], shown = null, lead = [], gap = [], lastBatch = 0, compute = 0, n = 0, since = performance.now(), fps = 0;
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  new EventSource("/events").onmessage = e => {
+    const m = JSON.parse(e.data), now = Date.now() / 1000;
+    buf = buf.concat(m.frames).slice(-300);
+    compute = m.compute;
+    // now - t for the newest frame: the offset from the watch's clock to this one, plus transport.
+    lead = lead.concat(now - m.frames[m.frames.length - 1].t).slice(-8);
+    if (lastBatch) gap = gap.concat(now - lastBatch).slice(-8);
+    lastBatch = now;
+  };
   (function frame() {
     requestAnimationFrame(frame);
-    if (!msg) return scene();
-    const feet = [msg.pose[R_ANK][0] - msg.pose[L_ANK][0], msg.pose[R_ANK][2] - msg.pose[L_ANK][2]];
+    if (!buf.length) return scene();
+    const delay = (gap.length ? Math.max(...gap) : 1) + 0.15;
+    const at = Date.now() / 1000 - Math.min(...lead) - delay;
+    let f = buf[0];
+    for (const b of buf) if (b.t <= at) f = b; else break;
+    if (f !== shown) { shown = f; n++; }
+    const feet = [f.pose[R_ANK][0] - f.pose[L_ANK][0], f.pose[R_ANK][2] - f.pose[L_ANK][2]];
     piste = [piste[0] * 0.98 + feet[0] * 0.02, piste[1] * 0.98 + feet[1] * 0.02];
     const len = Math.hypot(...piste) || 1;
     piste = [piste[0] / len, piste[1] / len];
-    cur = { pose: msg.pose, blade: msg.blade, grip: [0, 0, 0], root: [0, 0, 0], lift: 0 };
+    cur = { pose: f.pose, blade: f.blade, grip: [0, 0, 0], root: [0, 0, 0], lift: 0 };
     scene();
-    if (msg.drawn) return;
-    msg.drawn = true;
-    const now = Date.now();
-    lat = lat.concat(now - msg.arrived * 1000).slice(-90);
-    age = age.concat(now - msg.t * 1000).slice(-90);
-    if (performance.now() - since > 1000) { fps = Math.round(n * 1000 / (performance.now() - since)); n = 0; since = performance.now(); }
-    const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+    if (performance.now() - since < 1000) return;
+    fps = Math.round(n * 1000 / (performance.now() - since)); n = 0; since = performance.now();
     // A replayed recording carries its old timestamps, so only a live stream has a motion-to-screen figure.
-    const live = med(age) < 10000 ? ` · motion to screen <b>${med(age).toFixed(0)} ms</b>` : " · replayed recording";
-    $("stats").innerHTML = `samples received to pose drawn <b>${med(lat).toFixed(0)} ms</b>${live} · ${fps} poses/s`;
+    const age = Date.now() / 1000 - f.t;
+    const live = age < 30 ? `motion to screen <b>${(age * 1000).toFixed(0)} ms</b>` : "replayed recording";
+    $("stats").innerHTML = `<b>${fps}</b> poses/s · ${live} · batches every <b>${(gap.length ? med(gap) : 0).toFixed(2)} s</b> · model <b>${(compute * 1000).toFixed(0)} ms</b> per batch`;
   })();
 }
 </script>

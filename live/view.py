@@ -3,8 +3,8 @@
     uv run python -m live.view sample/demo_watch.watchpose.npz
 writes <take>.html beside the npz (model.predict's output) and opens it: live/index.html with the take embedded,
 so the file stands alone. Lunges and thrusts found from the pose are marked on the timeline with their hand
-speed, and the blade starts at its offset from the wrist (grip). If the npz has a pelvis track (root) the fencer
-travels along the piste.
+speed, and the blade starts at its offset from the wrist (grip). If the npz has model.predict's pelvis_velocity
+the fencer travels along the piste on model.piste.travel's short-memory track.
 """
 
 import base64
@@ -46,9 +46,10 @@ def write(path):
                 piste=(feet / np.linalg.norm(feet)).tolist(), floor=float(np.median(ground)), ground=packed(ground, 1000),
                 events=[dict(kind=e["kind"], onset=int(e["onset"]), peak=int(e["peak"]), end=int(e["end"]),
                              hand=e["hand"]) for e in moves(d)], grip=packed(d["grip"], 1000))
-    if "root" in d:
-        root = d["root"] - d["root"][0]
-        take["root"] = packed(root * [1, 0, 1], 1000)
+    if "pelvis_velocity" in d:
+        from model.piste import travel
+
+        take["root"] = packed(travel(pose, d["pelvis_velocity"]), 1000)
     page = Path(__file__).with_name("index.html").read_text()
     out = path.with_name(take["name"] + ".html")
     out.write_text(page.replace("<!--TAKE-->", f"<script>window.TAKE = {json.dumps(take)}</script>"))

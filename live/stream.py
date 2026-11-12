@@ -21,6 +21,10 @@ KEEP_S = 4.0  # raw samples kept: the 2 s model window plus room for the low-pas
 # Seconds behind the newest sample that a frame is taken: the zero-phase low-pass needs samples after it.
 MARGIN_S = 0.03
 C = np.array([[1.0, 0, 0], [0, 0, 1], [0, -1, 0]])  # CoreMotion reference (z up) -> body axes (right, up, back)
+# The heading mean forgets: walking to the piste after the recording starts otherwise leaves it 30-50 deg
+# off for the first minute of fencing.
+HEAD_TAU_S = 15.0
+FORGET = np.exp(-1 / (RATE * HEAD_TAU_S))
 WR, EL = JOINTS.index(WRIST_KP["right"]), JOINTS.index(ELBOW_KP["right"])
 
 
@@ -41,7 +45,7 @@ class Stream:
 
     t: sample times in seconds, any epoch; rows: (n, 13) gyro rad/s, user accel g, gravity g (the order of
     model.pairs.IMU_COLS), then the attitude quaternion w, x, y, z.
-    The forearm heading that model.pairs.level_attitude averages over a whole take is a running mean here.
+    The forearm heading that model.pairs.level_attitude averages over a whole take is a forgetting mean here.
     Fixing it from an opening en-garde hold instead costs 20-30 mm: the hold's heading is not the take's.
     blade_b: the fitted watch-frame blade direction (blade.npz "b"); the offline IMU-driven correction reads
     samples after the frame, so the live blade is the fixed direction only.
@@ -83,7 +87,7 @@ class Stream:
         out = []
         for ti, x, Ri in zip(tf, imu, R):
             f = Ri @ FOREARM_W
-            self.head += np.exp(1j * np.arctan2(f[1], f[0]))
+            self.head = self.head * FORGET + np.exp(1j * np.arctan2(f[1], f[0]))
             self.imu = (self.imu + [x])[-self.m["win"]:]
             self.R = (self.R + [Ri])[-self.m["win"]:]
             pose = self._pose()

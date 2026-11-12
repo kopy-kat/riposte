@@ -1,8 +1,8 @@
 """SAM 3D Body npz -> point caches + scene json for render/scene.py.
 
     uv run python -m render.prepare data/processed/<take>.sam3d.npz [--hand right] [--watch data/raw/<take>/watch [--offset s]]
-    uv run python -m render.prepare --watch-pose data/processed/<take>.watchpose.npz --watch-only <out dir> \
-        --watch data/raw/<take>/watch --frames 5672 6271        # the fencer for render/studio.py
+    uv run python -m render.prepare --watch-pose data/processed/cut5/demo.watchpose.npz --watch-only data/processed/cut5 \
+        --watch data/raw/demo/watch --frames 3898 4497          # the fencer for render/studio.py
 """
 
 import argparse
@@ -25,7 +25,7 @@ TRAIL_FRAMES = 12
 BONES = [(0, 5), (0, 6), (5, 6), (5, 7), (7, 22), (6, 8), (8, 21), (5, 9), (6, 10), (9, 10), (9, 11), (11, 13),
          (10, 12), (12, 14), (13, 15), (13, 17), (14, 18), (14, 20)]
 BONE_M = 0.012
-BLADE_MODEL = Path(__file__).resolve().parents[1] / "data/processed/body/blade_grip.npz"
+BLADE_MODEL = Path(__file__).resolve().parents[1] / "sample/blade.npz"
 BODY_MODEL = Path(__file__).resolve().parents[1] / "data/processed/body/body.npz"
 # Studio épée: distance along the axis from the knuckles and radius. The grip in the hand, the bell guard (a
 # 13.5 cm bowl, convex toward the point), then the blade tapering to the point.
@@ -245,8 +245,8 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
     blade comes from the watch's attitude and the BLADE_MODEL fitted by imu.blade_video.
 
     The pose is pelvis-relative in the body frame (right, up, back); each frame is lowered until the lowest
-    point of the body rests on the floor. With a predicted pelvis track (`root`, same frame) in the watch pose
-    the fencer travels along it; without one the pelvis stays over one spot.
+    point of the body rests on the floor. With model.predict's pelvis_velocity in the watch pose the fencer
+    travels along model.piste.travel's short-memory track; without it the pelvis stays over one spot.
     """
     from scipy.interpolate import CubicSpline
     from scipy.signal import savgol_filter
@@ -274,8 +274,10 @@ def watch_only(watch_pose, out, watch, first, last, hand="right"):
 
     k = first - 1 - lo
     follow = None
-    if "root" in w.files:
-        root = world(savgol_filter(fill_gaps(w["root"].astype(np.float32))[lo:last], 9, 2, axis=0))
+    if "pelvis_velocity" in w.files:
+        from model.piste import travel
+
+        root = world(savgol_filter(travel(full, w["pelvis_velocity"])[lo:last], 9, 2, axis=0))
         root[:, 2] = 0
         root -= root[k:].mean(0)  # centred on the piste over the frames shown
         verts += root[:, None]

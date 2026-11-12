@@ -21,7 +21,7 @@ import numpy as np
 
 from imu.load import G, SOURCE
 from live.stream import Stream, load
-from model.pairs import IMU_COLS
+from model.pairs import IMU_COLS, RATE
 
 ROOT = Path(__file__).resolve().parents[1]
 COLS = [SOURCE[c] for c in IMU_COLS + ["qw", "qx", "qy", "qz"]]
@@ -37,7 +37,7 @@ class Session:
         self.w = csv.writer(self.csv)
         self.w.writerow(["time", "seconds_elapsed", *COLS])
         self.t0 = self.metres = None
-        self.t, self.pose = [], []
+        self.t, self.pose, self.saved = [], [], 0
 
     def add(self, readings):
         """Sensor Logger "wrist motion" readings -> [(t, pose, blade)] for the frames they complete."""
@@ -57,12 +57,19 @@ class Session:
         for t, pose, _ in frames:
             self.t.append(t)
             self.pose.append(pose)
+        # Written as the take goes: a server stopped through `uv run` is killed before close() runs.
+        if len(self.t) - self.saved >= 10 * RATE:
+            self.save()
         return frames
+
+    def save(self):
+        self.saved = len(self.t)
+        np.savez(self.dir / "stream.npz", t=np.array(self.t), pose=np.array(self.pose))
 
     def close(self):
         self.csv.close()
         if self.t:
-            np.savez(self.dir / "stream.npz", t=np.array(self.t), pose=np.array(self.pose))
+            self.save()
         print(f"saved {self.dir} ({len(self.t)} frames)")
 
 
@@ -111,9 +118,11 @@ def main():
                     sessions[sid] = Session(model, blade_b, Path(a.out))
                     print(f"recording {sid}: {sessions[sid].dir}")
                 frames = sessions[sid].add(readings)
-                for t, pose, blade in frames[-1:]:  # the page draws only the newest pose
-                    msg = json.dumps(dict(t=t, arrived=arrived, pose=np.round(pose.astype(float), 4).tolist(),
-                                          blade=np.round(blade, 4).tolist(), compute=time.time() - arrived))
+                if frames:
+                    # Every frame of the batch: the app pushes about once a second, and the page plays them out.
+                    msg = json.dumps(dict(compute=time.time() - arrived, frames=[
+                        dict(t=t, pose=np.round(pose.astype(float), 4).tolist(), blade=np.round(blade, 4).tolist())
+                        for t, pose, blade in frames]))
                     for q in clients:
                         q.put(msg)
 

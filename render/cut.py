@@ -1,8 +1,8 @@
 """The demo video: title, the watch-only fencer on a piste, its skeleton and blade against the video's, the
 same drawn over the video, the numbers.
 
-    uv run python -m render.cut data/processed/cut_fencer/frames data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/watch data/processed/cut_fencer/deviation.mp4 data/processed/cut_fencer/over.mp4 riposte.mp4
+    uv run python -m render.cut data/processed/cut5/frames data/processed/cut5/demo.watchpose.npz \
+        data/raw/demo/watch data/processed/cut5/deviation.mp4 data/processed/cut5/over.mp4 riposte.mp4
 frames: render/studio.py output (PNGs, 1920x1080, f_N is pose sample N - 1); the watch pose labels its moves and
 the watch recording gives each one's hand speed. The two clips are render/deviation.py's, without and with --over.
 Writes a silent cut and prints where each part starts, for timing NARRATION; narrate() then adds the voice.
@@ -85,7 +85,7 @@ def watch_only(frames, pose, t, df):
     ev = events(pose, label(pose), WATCH_LUNGE_PEAK)
     for e, v in zip(ev, hand_speed(df, t, ev)):
         e["hand"] = v
-    big, mid, note = font(64, "Light"), font(40, "Light"), font(30, "Regular")
+    big, mid, note = font(64, "Light"), font(40, "Light"), font(28, "Regular")
     mint = tuple(int(v) for v in MINT)
     # The floor under the captions is lit: darken the bottom of the frame so the text holds.
     shade = np.zeros((H, W, 4), np.uint8)
@@ -98,7 +98,8 @@ def watch_only(frames, pose, t, df):
         out = np.clip(((len(frames) - 1 - i) / FPS - FADE) / 0.3, 0, 1)  # text gone before the crossfade
         txt = Image.new("RGBA", (W, H))
         g = ImageDraw.Draw(txt)
-        g.text((64, H - 64), "Apple Watch only  ·  body surface fitted to the predicted joints", font=note,
+        g.text((64, H - 64), "Apple Watch only  ·  body surface fitted to the predicted joints  ·  "
+               "travel along the piste from the watch, short-memory", font=note,
                fill=(255, 255, 255, int(190 * out)), anchor="ls")
         m = move_at(ev, int(path.stem[2:]) - 1)
         if m:

@@ -1,10 +1,12 @@
 """The watch-only pose and blade through the video's camera: against the video's own pose, or over the video.
 
-    uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/watch data/processed/cut_deviation.mp4 71.5 89.5
-    uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/watch data/processed/cut_over.mp4 33.5 49.5 --over data/raw/demo/video30.mp4 \
-        [--matte data/processed/cut_fencer/matte.mp4 --back pool]
+    uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/cut5/demo.watchpose.npz \
+        data/raw/demo/watch data/processed/cut5/deviation.mp4 71.5 89.5
+    uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/cut5/demo.watchpose.npz \
+        data/raw/demo/watch data/processed/cut5/over.mp4 33.5 49.5 --over data/raw/demo/video30.mp4 \
+        --matte data/processed/cut5/matte.mp4 --back blur
+The watch pose is model.predict's output for the take with two things the video's camera needs added: R (the
+video's heading frame, from the targets npz) and offset (watch time of video t=0).
 Without --over there are no video pixels: the video's pose and the blade found in the video (<take>.blade.npz
 from imu.blade_video) are a white ghost on black, and the watch's bones and blade are coloured by how far off
 they are. With --over the watch's skeleton and blade are drawn on the video itself, with everything but the

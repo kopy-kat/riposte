@@ -25,6 +25,7 @@ def main():
     ap.add_argument("zip")
     ap.add_argument("--url", default="http://localhost:8000/data")
     ap.add_argument("--seconds", type=float, help="stop after this much of the recording")
+    ap.add_argument("--batch", type=float, default=BATCH_S, help="seconds per push; Sensor Logger's free tier sends about 1")
     ap.add_argument("--score")
     ap.add_argument("--targets")
     a = ap.parse_args()
@@ -49,7 +50,7 @@ def main():
     cols = list(SOURCE.values())
     t = raw["time"].to_numpy()
     rows = raw[cols].to_numpy()
-    edges = np.searchsorted(t, np.arange(t[0], t[-1], BATCH_S * 1e9))
+    edges = np.searchsorted(t, np.arange(t[0], t[-1], a.batch * 1e9))
     start, sid = time.monotonic(), f"replay-{int(time.time())}"
     for mid, (i, j) in enumerate(zip(edges, np.r_[edges[1:], len(t)])):
         if a.seconds and (t[i] - t[0]) / 1e9 > a.seconds:
