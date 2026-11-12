@@ -136,7 +136,7 @@ def main():
                                            load_sensor_logger(watch_dir)))
     encode(tmp / "end.mp4", card([("61 mm", 110, "Light", mint, -60),
                                   ("mean joint error on a take the model never saw", 30, "Regular", grey, 40),
-                                  ("average pose: 106 mm", 26, "Regular", (95, 95, 100), 90)], 4.0))
+                                  ("average pose: 106 mm", 26, "Regular", (95, 95, 100), 90)], 5.0))
 
     parts = [tmp / "title.mp4", tmp / "watch.mp4", deviation, over, tmp / "end.mp4"]
     lengths = [float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
@@ -145,7 +145,9 @@ def main():
     for i in range(1, len(parts)):
         t += lengths[i - 1] - FADE
         starts.append(t)
-        chain.append(f"{prev}[v{i}]xfade=transition=fade:duration={FADE}:offset={t:.3f}[x{i}]")
+        # Into the end card through black: its numbers over the last video frame would muddy both.
+        kind = "fadeblack" if i == len(parts) - 1 else "fade"
+        chain.append(f"{prev}[v{i}]xfade=transition={kind}:duration={FADE}:offset={t:.3f}[x{i}]")
         prev = f"[x{i}]"
     norm = ";".join(f"[{i}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[v{i}]" for i in range(len(parts)))
     subprocess.run(["ffmpeg", "-v", "error", "-y", *[a for p in parts for a in ("-i", str(p))], "-filter_complex",

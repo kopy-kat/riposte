@@ -1,5 +1,5 @@
 """Renders the watch-only fencer from render/prepare.py --watch-only in a studio: a piste, a pool of light,
-and a camera that orbits the fencer once over the frames.
+and a camera that orbits the fencer once over the frames, side-on at the widest stance.
 
     /Applications/Blender.app/Contents/MacOS/Blender -b -P render/studio.py -- <take dir> <width> <height> [last frame [first frame]]
 writes <take dir>/frames/f_NNNN.png.
@@ -21,7 +21,7 @@ start = int(args[4]) if len(args) > 4 else first
 end = int(args[3]) if len(args) > 3 else first + n - 1
 
 MINT = (0.18, 0.86, 0.60)
-RADIUS, HEIGHT, LOOK_AT = 4.6, 1.25, (0.0, 0.0, 0.8)
+RADIUS, HEIGHT, LOOK_AT = 5.3, 1.2, (0.0, 0.0, 0.82)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
@@ -88,51 +88,95 @@ def trail_material():
 
 
 def kit_material():
-    """The fencing kit: colour, roughness and metal per vertex (render/prepare.py's kit), with the mask's wire
-    mesh drawn where `kit_mesh` is positive so its edge is a clean line, not a row of triangles."""
+    """The fencing kit. Each garment starts where its field (render/prepare.py's kit) turns positive, so the
+    edges are lines across the faces, not rows of triangles; a seam darkens the hem, the cuffs and the glove's."""
     m = bpy.data.materials.new("kit")
     m.use_nodes = True
     nt = m.node_tree
     b = nt.nodes["Principled BSDF"]
-    col, fin, mesh = (nt.nodes.new("ShaderNodeAttribute") for _ in range(3))
-    col.attribute_name, fin.attribute_name, mesh.attribute_name = "kit_col", "kit_finish", "kit_mesh"
-    sep = nt.nodes.new("ShaderNodeSeparateColor")
-    nt.links.new(fin.outputs["Color"], sep.inputs["Color"])
-    edge = nt.nodes.new("ShaderNodeMapRange")
-    edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value = -0.002, 0.002
-    nt.links.new(mesh.outputs["Fac"], edge.inputs["Value"])
-    wire = s["kit"]["mesh"]
-    for socket, src, value in (("Base Color", col.outputs["Color"], (*wire[:3], 1)),
-                               ("Roughness", sep.outputs["Red"], wire[3]), ("Metallic", sep.outputs["Green"], wire[4])):
+    kit = s["kit"]
+
+    def field(name, lo=-0.0015, hi=0.0015):
+        a = nt.nodes.new("ShaderNodeAttribute")
+        a.attribute_name = name
+        e = nt.nodes.new("ShaderNodeMapRange")
+        e.inputs["From Min"].default_value, e.inputs["From Max"].default_value = lo, hi
+        nt.links.new(a.outputs["Fac"], e.inputs["Value"])
+        return a.outputs["Fac"], e.outputs["Result"]
+
+    def over(prev, fac, first, value, colour):
         mix = nt.nodes.new("ShaderNodeMix")
-        mix.data_type = "RGBA" if socket == "Base Color" else "FLOAT"
-        a, bb, out = (6, 7, 2) if socket == "Base Color" else (2, 3, 0)
-        nt.links.new(edge.outputs["Result"], mix.inputs[0])
-        nt.links.new(src, mix.inputs[a])
+        mix.data_type = "RGBA" if colour else "FLOAT"
+        a, bb, out = (6, 7, 2) if colour else (2, 3, 0)
+        nt.links.new(fac, mix.inputs[0])
+        if prev is None:
+            mix.inputs[a].default_value = first
+        else:
+            nt.links.new(prev, mix.inputs[a])
         mix.inputs[bb].default_value = value
-        nt.links.new(mix.outputs[out], b.inputs[socket])
-    nt.links.new(sep.outputs["Blue"], b.inputs["Sheen Weight"])
-    b.inputs["Sheen Roughness"].default_value = 0.4
+        return mix.outputs[out]
+
+    col = rough = seam = None
+    for name, garment in (("hem", "breeches"), ("cuff", "sock"), ("shoe", "shoe"), ("glove", "glove"), ("hand", "skin"),
+                          ("kit_mesh", "mesh")):
+        raw, fac = field(name, -0.002, 0.002) if name == "kit_mesh" else field(name)
+        col = over(col, fac, (*kit["jacket"][:3], 1), (*kit[garment][:3], 1), True)
+        rough = over(rough, fac, kit["jacket"][3], kit[garment][3], False)
+        if name in ("hem", "cuff", "glove"):
+            # A stitched edge: a 5 mm band just inside the upper garment's end.
+            near = nt.nodes.new("ShaderNodeMapRange")
+            near.inputs["From Min"].default_value, near.inputs["From Max"].default_value = -0.007, -0.0055
+            far = nt.nodes.new("ShaderNodeMapRange")
+            far.inputs["From Min"].default_value, far.inputs["From Max"].default_value = -0.0015, 0.0
+            far.inputs["To Min"].default_value, far.inputs["To Max"].default_value = 1.0, 0.0
+            band = nt.nodes.new("ShaderNodeMath")
+            band.operation = "MULTIPLY"
+            for n in (near, far):
+                nt.links.new(raw, n.inputs["Value"])
+            nt.links.new(near.outputs["Result"], band.inputs[0])
+            nt.links.new(far.outputs["Result"], band.inputs[1])
+            if seam is None:
+                seam = band.outputs[0]
+            else:
+                add = nt.nodes.new("ShaderNodeMath")
+                add.operation = "MAXIMUM"
+                nt.links.new(seam, add.inputs[0])
+                nt.links.new(band.outputs[0], add.inputs[1])
+                seam = add.outputs[0]
+        if name == "kit_mesh":
+            mesh_fac = fac
+    shade = nt.nodes.new("ShaderNodeMix")
+    shade.data_type = "RGBA"
+    shade.blend_type = "MULTIPLY"
+    nt.links.new(seam, shade.inputs[0])
+    nt.links.new(col, shade.inputs[6])
+    shade.inputs[7].default_value = (0.45, 0.45, 0.45, 1)
+    nt.links.new(shade.outputs[2], b.inputs["Base Color"])
+    nt.links.new(rough, b.inputs["Roughness"])
+    metal = nt.nodes.new("ShaderNodeMath")
+    metal.operation = "MULTIPLY"
+    nt.links.new(mesh_fac, metal.inputs[0])
+    metal.inputs[1].default_value = kit["mesh"][4]
+    nt.links.new(metal.outputs[0], b.inputs["Metallic"])
+    b.inputs["Sheen Weight"].default_value = 0.25
+    b.inputs["Sheen Roughness"].default_value = 0.5
     return m
 
 
 def dress(ob):
-    """Paints the kit and lets the cloth hang off the body: smoothed where it is fabric, then let out a little."""
-    kit, part = s["kit"], s["body_kit"]
+    """Gives the mesh its kit fields and lets the cloth hang off the body: smoothed where it is fabric, then
+    let out a little."""
     me = ob.data
-    col = me.attributes.new("kit_col", "FLOAT_COLOR", "POINT")
-    col.data.foreach_set("color", [c for p in part for c in (*kit[p][:3], 1.0)])
-    fin = me.attributes.new("kit_finish", "FLOAT_COLOR", "POINT")
-    fin.data.foreach_set("color", [c for p in part for c in (kit[p][3], kit[p][4], 0.5 * kit[p][5], 1.0)])
-    me.attributes.new("kit_mesh", "FLOAT", "POINT").data.foreach_set("value", s["body_mesh"])
+    for name, values in (*s["body_fields"].items(), ("kit_mesh", s["body_mesh"])):
+        me.attributes.new(name, "FLOAT", "POINT").data.foreach_set("value", values)
     cloth = ob.vertex_groups.new(name="cloth")
-    for i, p in enumerate(part):
-        if kit[p][5] > 0:
-            cloth.add([i], kit[p][5], "REPLACE")
+    for i, wgt in enumerate(s["body_cloth"]):
+        if wgt > 0:
+            cloth.add([i], wgt, "REPLACE")
     sm = ob.modifiers.new("smooth", "SMOOTH")
-    sm.factor, sm.iterations, sm.vertex_group = 0.5, 30, "cloth"
+    sm.factor, sm.iterations, sm.vertex_group = 0.5, 10, "cloth"
     out = ob.modifiers.new("ease", "DISPLACE")
-    out.strength, out.mid_level, out.vertex_group = 0.016, 0.0, "cloth"
+    out.strength, out.mid_level, out.vertex_group = 0.004, 0.0, "cloth"
 
 
 def cached_mesh(name, rest, faces, pc2, mat, smooth=True):
@@ -211,21 +255,26 @@ scene.collection.objects.link(target)
 rig = bpy.data.objects.new("rig", None)
 scene.collection.objects.link(rig)
 light("pool", "SPOT", (0, 0, 7.0), 3600, (1.0, 0.96, 0.9), 0.6, math.radians(62))
-light("key", "AREA", (3.5, -2.5, 3.2), 300, (1.0, 0.95, 0.88), 2.5, parent=rig)
+light("key", "AREA", (3.5, -2.5, 3.2), 230, (1.0, 0.95, 0.88), 2.5, parent=rig)
 light("rim", "AREA", (-3.5, 2.5, 2.4), 500, MINT, 2.0, parent=rig)
 light("fill", "AREA", (3.0, 3.5, 1.2), 40, (0.6, 0.7, 1.0), 4.0, parent=rig)
 
 cam_data = bpy.data.cameras.new("cam")
-cam_data.lens = 36.0
+cam_data.lens = 46.0
+cam_data.dof.use_dof, cam_data.dof.aperture_fstop = True, 2.0
 cam = bpy.data.objects.new("cam", cam_data)
+cam_data.dof.focus_object = target
 scene.collection.objects.link(cam)
 scene.camera = cam
 c = cam.constraints.new("TRACK_TO")
 c.target, c.track_axis, c.up_axis = target, "TRACK_NEGATIVE_Z", "UP_Y"
-# One full turn, starting side-on with the fencer facing left as the video did; slower into and out of the cut.
+# One full turn, slower into and out of the cut, timed to be side-on, the fencer facing left as the video did,
+# at the widest stance: the lunge is seen square.
+turn = lambda u: 2 * math.pi * (u - 0.5 * math.sin(2 * math.pi * u) / (2 * math.pi))
+square = yaw + math.pi / 2 - turn((s["widest"] - first) / (n - 1))
 for f in range(first, first + n):
     u = (f - first) / (n - 1)
-    a = yaw + math.pi / 2 + 2 * math.pi * (u - 0.5 * math.sin(2 * math.pi * u) / (2 * math.pi))
+    a = square + turn(u)
     cam.location = Vector((RADIUS * math.cos(a), RADIUS * math.sin(a), HEIGHT + 0.25 * math.sin(2 * math.pi * u)))
     cam.keyframe_insert("location", frame=f)
     rig.rotation_euler = (0, 0, a)

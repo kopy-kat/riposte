@@ -1,7 +1,8 @@
 """The blade's image direction found in the video, and the watch-frame blade direction fitted to it.
 
     uv run python -m imu.blade_video data/processed/blade.npz <watch dir>,<npz>,<video30.mp4>[,offset] ...
-fits one blade model over the given takes for the watch-only render (watch_blade).
+fits one blade model over the given takes for the watch-only render (watch_blade), and where the blade
+passes the hand (watch_grip).
 
 The blade is a thin dark line against a lighter background: from the grip, score rays at each image
 angle by how much darker the ray is than both its sides, and keep the best angle where it stands out.
@@ -128,6 +129,59 @@ def detections(npz, video, grip_px):
     return d["obs"], d["conf"]
 
 
+def line_shift(video, grip_px, angle, frames, width, height):
+    """Sideways distance in pixels from the grip keypoint to the blade seen at `angle`, along the normal
+    (-sin, cos), for the frame indices `frames`: detect()'s ray score at the one angle, over finer shifts."""
+    w, h = int(width * SCALE), int(height * SCALE)
+    r, shifts = np.arange(R0, R1, 2.0), np.arange(-24, 25, 1.0)
+    want, out = set(int(i) for i in frames), {}
+    for i, img in enumerate(gray_frames(video, w, h)):
+        if i not in want:
+            continue
+        d = np.array([np.cos(angle[i]), np.sin(angle[i])])
+        n = np.array([-d[1], d[0]])
+        pts = grip_px[i] * SCALE + shifts[:, None, None] * n + r[None, :, None] * d
+
+        def sample(q):
+            return map_coordinates(img, [q[..., 1].ravel(), q[..., 0].ravel()], order=1, cval=np.nan).reshape(q.shape[:2])
+
+        resp = np.nanmean(np.minimum(sample(pts + SIDE * n), sample(pts - SIDE * n)) - sample(pts), axis=1)
+        out[i] = shifts[int(np.argmax(np.nan_to_num(resp, nan=-np.inf)))] / SCALE
+    return np.array([out.get(int(i), np.nan) for i in frames])
+
+
+def fit_grip(specs, per_take=400):
+    """Where the blade passes the hand, as one offset from the wrist in the watch frame, metres: the watch is
+    strapped beside the hand that holds the grip, and the blade leaves through the bell guard's centre, which
+    is neither the wrist nor the knuckles. specs as fit_model's; the point is the knuckle keypoint moved
+    sideways in the image onto the blade seen there."""
+    from imu.load import load_sensor_logger
+    from imu.synth import WRIST_KP
+    from model.pairs import attitude, pair
+
+    rng = np.random.default_rng(0)
+    c = []
+    for spec in specs:
+        w, n, v, *off = spec.split(",")
+        p = pair(w, n, offset=float(off[0]) if off else None)
+        d = np.load(n)
+        K = d["cam_int"].reshape(-1, 3, 3)[0]
+        kn = d["pred_keypoints_3d"][:, KNUCKLE_KP["right"]].astype(float) + d["pred_cam_t"].astype(float)
+        wr = d["pred_keypoints_3d"][:, WRIST_KP["right"]].astype(float) + d["pred_cam_t"].astype(float)
+        o, conf = detections(n, v, project(K, kn))
+        df = load_sensor_logger(w)
+        tv = np.arange(len(o)) / float(d["fps"]) + p["offset"]
+        tw = df.index.to_numpy()
+        ok = (d["found"].astype(bool) & (tv >= tw[0]) & (tv <= tw[-1]) & np.isfinite(o) & np.isfinite(kn).all(1)
+              & (conf > np.percentile(conf[conf > 0], 50)))
+        i = np.sort(rng.choice(np.flatnonzero(ok), min(per_take, ok.sum()), replace=False))
+        shift = line_shift(v, project(K, kn), o, i, 2 * K[0, 2], 2 * K[1, 2])
+        side = np.stack([-np.sin(o[i]), np.cos(o[i]), np.zeros(len(i))], 1) * (shift * kn[i, 2] / K[0, 0])[:, None]
+        MA = np.einsum("ij,tjk->tik", p["Q"], attitude(df, tv[i]))
+        c.append(np.einsum("tji,tj->ti", MA, kn[i] + side - wr[i])[np.abs(shift) < 24 / SCALE])
+    return np.median(np.concatenate(c), 0)
+
+
 LAGS = (-0.2, -0.1, 0.0, 0.1, 0.2)  # s of watch input either side of a frame for the b(t) correction
 RIDGE = 1e-2
 
@@ -196,21 +250,18 @@ def fit_model(specs, per_take=1500, clip=0.6):
     X = np.c_[J[:, :1] * F, J[:, 1:] * F]
     W = np.linalg.solve(X.T @ X + RIDGE * len(e) * np.eye(X.shape[1]), X.T @ -e).reshape(2, -1).T
     f = np.mean(forearm, 0)
-    return {"b": b, "forearm": f / np.linalg.norm(f), "W": W, "mu": mu, "sd": sd}
+    return {"b": b, "forearm": f / np.linalg.norm(f), "W": W, "mu": mu, "sd": sd, "grip": fit_grip(specs)}
 
 
-def watch_blade(m, watch, t, pose, hand="right"):
-    """Blade direction (T, 3) in the watch-only pose's body frame (right, up, back) at watch times t, from
-    the watch alone: m is a fit_model() result, pose the predicted (T, J, 3) model.pairs.JOINTS.
+def body_from_watch(m, df, t, pose, hand="right"):
+    """(T, 3, 3) rotations from the watch frame to the watch-only pose's body frame (right, up, back).
 
     The body frame's up is gravity (model.pairs.heading_frame), so only its heading is unknown: one angle
     for the take, turning the watch's forearm axis about up onto the predicted forearm.
     """
-    from imu.load import load_sensor_logger
     from imu.synth import ELBOW_KP, WRIST_KP
-    from model.pairs import JOINTS, RATE, attitude, imu_at
+    from model.pairs import JOINTS, attitude
 
-    df = load_sensor_logger(watch)
     R_w = attitude(df, t)
     C = np.array([[1.0, 0, 0], [0, 0, 1], [0, -1, 0]])  # reference (x, y, z up) -> body axes at zero heading
     u = pose[:, JOINTS.index(WRIST_KP[hand])] - pose[:, JOINTS.index(ELBOW_KP[hand])]
@@ -223,10 +274,29 @@ def watch_blade(m, watch, t, pose, hand="right"):
     psi += np.median(np.angle(np.exp(1j * (d - psi))))
     c, s = np.cos(psi), np.sin(psi)
     Y = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    return np.einsum("ij,jk,tkl->til", Y, C, R_w)
+
+
+def watch_blade(m, watch, t, pose, hand="right"):
+    """Blade direction (T, 3) in the watch-only pose's body frame at watch times t, from the watch alone: m is
+    a fit_model() result, pose the predicted (T, J, 3) model.pairs.JOINTS."""
+    from imu.load import load_sensor_logger
+    from model.pairs import RATE, imu_at
+
+    df = load_sensor_logger(watch)
     b = bent(m, lagged(imu_at(df, t), RATE))
     # The correction jitters frame to frame, zigzagging the tip; smoothing it also scores slightly better.
-    a = gaussian_filter1d(np.einsum("ij,jk,tkl,tl->ti", Y, C, R_w, b), 2 * len(t) / (t[-1] - t[0]) / RATE, axis=0)
+    a = gaussian_filter1d(np.einsum("til,tl->ti", body_from_watch(m, df, t, pose, hand), b),
+                          2 * len(t) / (t[-1] - t[0]) / RATE, axis=0)
     return a / np.linalg.norm(a, axis=1, keepdims=True)
+
+
+def watch_grip(m, watch, t, pose, hand="right"):
+    """Where the blade passes the hand, (T, 3) from the predicted wrist in the body frame: m's fit_grip offset
+    carried by the watch's attitude."""
+    from imu.load import load_sensor_logger
+
+    return body_from_watch(m, load_sensor_logger(watch), t, pose, hand) @ m["grip"]
 
 
 if __name__ == "__main__":

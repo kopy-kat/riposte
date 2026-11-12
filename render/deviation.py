@@ -3,23 +3,25 @@
     uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
         data/raw/demo/watch data/processed/cut_deviation.mp4 71.5 89.5
     uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/watch data/processed/cut_over.mp4 30 48 --over data/raw/demo/video30.mp4
+        data/raw/demo/watch data/processed/cut_over.mp4 33.5 44.5 --over data/raw/demo/video30.mp4
 Without --over there are no video pixels: the video's pose and the blade found in the video (<take>.blade.npz
 from imu.blade_video) are a white ghost on black, and the watch's bones and blade are coloured by how far off
-they are. With --over the watch's skeleton and blade are drawn on the video itself. Either way the watch
-skeleton gets the video's pelvis, since the watch can't see where the fencer stands. Prints the mean per-joint
-error over the frames drawn.
+they are. With --over the watch's skeleton and blade are drawn on the video itself, with everything but the
+fencer and the real blade blurred. Either way the watch skeleton gets the video's pelvis, since the watch can't
+see where the fencer stands, and the watch's blade starts where imu.blade_video.watch_grip puts it on the
+predicted wrist. Prints the mean per-joint error over the frames drawn.
 """
 
 import subprocess
 import sys
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from scipy.ndimage import binary_closing, binary_dilation, gaussian_filter
 
-from imu.blade_video import watch_blade
+from imu.blade_video import line_shift, watch_blade, watch_grip
 from imu.calib import KNUCKLE_KP
-from imu.synth import ELBOW_KP, WRIST_KP
+from imu.synth import WRIST_KP
 from model.pairs import JOINTS
 from render.prepare import BLADE_M, BLADE_MODEL, BONES
 
@@ -30,7 +32,8 @@ STOPS = np.array([[110, 231, 183], [253, 224, 120], [255, 107, 107]], dtype=floa
 BG = (11, 11, 13)
 ZOOM, LIFT = 0.8, 90
 FADE = 1.0  # render.cut crossfades this clip in and out over a second; keep the text out of the fades
-HAND_M = 0.09  # wrist to the knuckles, where the blade leaves the hand
+MASK = 4  # the fencer's cut-out is built at 1/MASK resolution
+BLUR, DIM = 14, 0.72  # the background behind the fencer: Gaussian radius in pixels, brightness
 FONT = "/System/Library/Fonts/SFNS.ttf"
 
 
@@ -46,6 +49,26 @@ def video_frames(video, start, n, w, h):
                          stdout=subprocess.PIPE)
     for _ in range(n):
         yield Image.frombytes("RGB", (w, h), p.stdout.read(w * h * 3)).convert("RGBA")
+
+
+def cutout(body, blade, guard_r, w, h):
+    """Soft mask (h, w), 1 on the fencer and the real blade: body (V, 2) projected mesh vertices, blade the
+    two pixel ends of the blade seen in the video, guard_r its bell guard's radius in pixels. The mesh is the
+    bare body, so the mask is let out to take in hair, a loose shirt and shoes."""
+    m = np.zeros((h // MASK, w // MASK), bool)
+    ij = np.round(body / MASK).astype(int)
+    ij = ij[(ij[:, 0] >= 0) & (ij[:, 0] < m.shape[1]) & (ij[:, 1] >= 0) & (ij[:, 1] < m.shape[0])]
+    m[ij[:, 1], ij[:, 0]] = True
+    m = binary_dilation(binary_closing(m, np.ones((5, 5))), np.ones((5, 5)))
+    line = Image.new("L", (m.shape[1], m.shape[0]))
+    g = ImageDraw.Draw(line)
+    a, b = (tuple(p / MASK) for p in blade)
+    g.line([a, b], fill=255, width=5)
+    r = guard_r / MASK
+    g.ellipse([a[0] - r, a[1] - r, a[0] + r, a[1] + r], fill=255)
+    g.ellipse([b[0] - 3, b[1] - 3, b[0] + 3, b[1] + 3], fill=255)
+    m = gaussian_filter((m | (np.asarray(line) > 0)).astype(np.float32), 1.2)
+    return Image.fromarray((m * 255).astype(np.uint8)).resize((w, h), Image.BILINEAR)
 
 
 def main():
@@ -70,13 +93,16 @@ def main():
     body = np.where(found, err.mean(1), np.nan)
 
     # The watch's blade leaves the predicted hand along the direction model.predict scores.
-    axis = at_video(watch_blade(np.load(BLADE_MODEL), watch_dir, w["t"], np.nan_to_num(w["pose"]))) @ w["R"]
-    wr, el = pred[:, JOINTS.index(WRIST_KP["right"])], pred[:, JOINTS.index(ELBOW_KP["right"])]
-    guard = wr + HAND_M * (wr - el) / np.linalg.norm(wr - el, axis=1, keepdims=True)
+    model, pose = np.load(BLADE_MODEL), np.nan_to_num(w["pose"])
+    axis = at_video(watch_blade(model, watch_dir, w["t"], pose)) @ w["R"]
+    hand = at_video(watch_grip(model, watch_dir, w["t"], pose)) @ w["R"]
+    WR = JOINTS.index(WRIST_KP["right"])
+    guard = pred[:, WR] + hand
     tip = guard + BLADE_M * axis / np.linalg.norm(axis, axis=1, keepdims=True)
-    # The video's blade is an image angle from its own grip; drawn at the length a side-on blade would have.
+    # The video's blade is an image angle; it starts where the same grip sits on the video's wrist, and is
+    # drawn at the length a side-on blade would have.
     seen = np.load(sam.replace(".sam3d.npz", ".blade.npz"))
-    grip = d["pred_keypoints_3d"][:, KNUCKLE_KP["right"]] + d["pred_cam_t"]
+    grip = true[:, WR] + hand
     seen_ok = found & np.isfinite(seen["obs"]) & (seen["conf"] > np.percentile(seen["conf"][seen["conf"] > 0], 50))
 
     zoom, lift = (1.0, 0) if over else (ZOOM, LIFT)
@@ -94,9 +120,26 @@ def main():
                             "-r", f"{fps}", "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", out],
                            stdin=subprocess.PIPE)
     back = video_frames(over, start, end - start, W, H) if over else None
+    if over:
+        # What stays sharp: the body's mesh and the blade seen in the video, found from its own knuckle keypoint.
+        mesh = d["pred_vertices"][start:end] + d["pred_cam_t"][start:end, None]
+        knuckle = d["pred_keypoints_3d"][:, KNUCKLE_KP["right"]] + d["pred_cam_t"]
+        ang = np.where(np.isfinite(seen["obs"]) & (seen["conf"] > 0), seen["obs"],
+                       np.arctan2(*(project(tip) - project(guard)).T[::-1]))
+        shift = line_shift(over, project(knuckle), ang, range(start, end), W, H)
+        still = None
     bone_w, blade_w = (3, 3) if over else (5, 4)
     for k in range(start, end):
         img = next(back) if over else Image.new("RGBA", (W, H), BG + (255,))
+        if over:
+            if found[k] or still is None:
+                dirn, px = np.array([np.cos(ang[k]), np.sin(ang[k])]), K[0, 0] / knuckle[k, 2]
+                on = project(knuckle[k]) + shift[k - start] * np.array([-dirn[1], dirn[0]])
+                still = cutout(project(mesh[k - start]), (on + 0.04 * px * dirn, on + (BLADE_M + 0.06) * px * dirn),
+                               0.085 * px, W, H)
+            soft = img.filter(ImageFilter.GaussianBlur(BLUR)).point(lambda v: v * DIM)
+            soft.putalpha(255)
+            img = Image.composite(img, soft, still)
         if found[k]:
             layer = Image.new("RGBA", (W * SS, H * SS))
             g = ImageDraw.Draw(layer)
@@ -120,6 +163,8 @@ def main():
             for j in {j for bone in BONES for j in bone}:
                 x, y = watch2d[j]
                 g.ellipse([x - r, y - r, x + r, y + r], fill=(mint if over else colour(err[k, j])) + (255,))
+            if not over:  # the hand, from the wrist to where it holds the blade
+                g.line([tuple(watch2d[WR]), a], fill=colour(err[k, WR]) + (255,), width=bone_w * SS)
             g.line([a, b], fill=blade_rgb + (255,), width=blade_w * SS)
             img.alpha_composite(layer.resize((W, H), Image.LANCZOS))
         a = np.clip(min((k - start) / fps - FADE, (end - 1 - k) / fps - FADE) / 0.3, 0, 1)
