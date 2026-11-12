@@ -12,7 +12,7 @@ Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan 
 2. A wrist tap, seeded by the clocks of both devices, syncs the two streams to a frame (`imu/sync.py`, `model/pairs.py`).
 3. SAM 3D Body turns each video frame into a 3D body on Modal GPUs. That is the training target (`pose/sam3d_modal.py`).
 4. A bidirectional GRU maps 2 s windows of wrist IMU and attitude to 30 joints relative to the pelvis. It trains on about 21 minutes of my fencing, with strap-rotation and noise augmentation (`model/train.py`).
-5. The blade comes from the watch's attitude, fitted to the blade seen in the training video (`imu/blade_video.py`, full pipeline only). Moves and their timing are read off the predicted pose (`analysis/moves.py`).
+5. The blade comes from the watch's attitude, fitted to the blade seen in the training video (`imu/blade_video.py`; the fit ships in `sample/`). Moves and their timing are read off the predicted pose (`analysis/moves.py`).
 
 ## How to run
 
@@ -55,7 +55,8 @@ Nothing in the pipeline or the numbers is mocked.
 
 - The watch can't tell where you stand. The pelvis is held still in the watch-only view and placed at the video's pelvis in the comparison.
 - The "ground truth" is SAM 3D Body run on monocular video, not motion capture.
-- The model is offline. The GRU is bidirectional over 2 s windows, so each frame also uses IMU from after it.
+- The model is offline: its bidirectional GRU also uses IMU from after each frame.
 - There is one fencer (me), one room and no opponent.
 - Thrusts are the weak spot, at 103 mm during full extension.
 - Steps aren't detected.
+- The watch-only blade direction isn't scored against the video.
