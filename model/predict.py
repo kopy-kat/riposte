@@ -56,7 +56,7 @@ def main():
     for kind, name in (("lunge", "lunges"), ("extension", "thrusts")):
         d = [e["duration"] * 1000 for e in watch if e["kind"] == kind]
         if d:
-            print(f"{len(d)} {name}: median {np.median(d):.0f} ms, fastest {min(d):.0f}, slowest {max(d):.0f}")
+            print(f"{len(d)} {name}: median {np.median(d):.0f} ms onset to peak")
     print()
     if tg is None:
         return
