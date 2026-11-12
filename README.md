@@ -10,17 +10,18 @@ Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan 
 
 1. Sensor Logger records the watch's IMU at 100 Hz while an iPhone films side-on (`imu/load.py`).
 2. A wrist tap syncs the streams (`imu/sync.py`, `model/pairs.py`).
-3. SAM 3D Body on Modal GPUs turns each video frame into the 3D training target (`pose/sam3d_modal.py`).
+3. SAM 3D Body on Modal turns each frame into a 3D training target (`pose/sam3d_modal.py`).
 4. A bidirectional GRU maps 2 s windows of wrist IMU and attitude to 30 joints relative to the pelvis. It trains on 21 minutes of my fencing with strap-rotation augmentation (`model/train.py`).
-5. The blade's direction and its offset from the wrist come from the watch's attitude, fitted to the training video's blade (`imu/blade_video.py`). Moves and their timing are read off the predicted pose (`analysis/moves.py`).
+5. The blade's direction and its offset from the wrist come from the watch's attitude, fitted to the training video's blade (`imu/blade_video.py`). Moves are read off the predicted pose (`analysis/moves.py`).
 
 ## How to run
 
-Reproduce the held-out numbers:
+Reproduce the held-out numbers, then scrub and orbit the replay:
 
 ```sh
 uv sync
 uv run python -m model.predict sample/demo_watch.zip sample/weights.pt --targets sample/demo_targets.npz
+uv run python -m live.view sample/demo_watch.watchpose.npz
 ```
 
 The full pipeline needs video:
