@@ -44,7 +44,7 @@ On a 4-minute take held out from training:
 | nearest-neighbour retrieval | 87 mm |
 | average pose | 106 mm |
 
-- The baselines come from `model.train`. Cross-validated over the 8 training takes, the model gets 58 mm.
+- The retrieval row comes from `model.train`. Cross-validated over the 8 training takes, the model gets 58 mm.
 - Moves found from the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms). Their median onset is within 33 ms and 67 ms of the video's.
 - `render.deviation` recomputes the error frame by frame against the video and gets 61 mm over the take.
 

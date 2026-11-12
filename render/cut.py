@@ -65,24 +65,28 @@ def move_at(ev, i):
 
 def watch_only(frames, pose):
     ev = events(pose, label(pose), WATCH_LUNGE_PEAK)
-    small, big, mid = font(26, "Regular"), font(64, "Light"), font(40, "Light")
+    small, big, mid = font(36, "Regular"), font(64, "Light"), font(40, "Light")
     mint = tuple(int(v) for v in MINT)
-    for path in frames:
+    for i, path in enumerate(frames):
         px = np.asarray(Image.open(path).convert("RGBA")).copy()
         r, g, b = (px[..., i].astype(int) for i in range(3))
         px[(g > r + 30) & (g > b + 20), :3] = MINT  # the skeleton, in the overlay's colour
         px[(r > b + 40) & (r > g + 15), 3] = 0  # the tip trail: it tangles when the watch blade swings
         img = Image.new("RGBA", (W, H), BG + (255,))
         img.alpha_composite(Image.fromarray(px))
-        g = ImageDraw.Draw(img)
-        g.text((64, H - 64), "Apple Watch only", font=small, fill=(255, 255, 255, 150), anchor="ls")
+        out = np.clip(((len(frames) - 1 - i) / FPS - FADE) / 0.3, 0, 1)  # text gone before the crossfade
+        txt = Image.new("RGBA", (W, H))
+        g = ImageDraw.Draw(txt)
+        g.text((64, H - 64), "Apple Watch only", font=small, fill=(255, 255, 255, int(150 * out)), anchor="ls")
         m = move_at(ev, int(path.stem[2:]) - 1)
         if m:
             name, dur, a = m
-            g.text((64, H - 120), name, font=big, fill=(255, 255, 255, int(235 * a)), anchor="ls")
+            a *= out
+            g.text((64, H - 130), name, font=big, fill=(255, 255, 255, int(235 * a)), anchor="ls")
             if dur is not None:
                 x = 64 + g.textlength(name, font=big) + 24
-                g.text((x, H - 120), f"{dur:.2f} s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
+                g.text((x, H - 130), f"{dur:.2f} s", font=mid, fill=mint + (int(235 * a),), anchor="ls")
+        img.alpha_composite(txt)
         yield img
 
 
@@ -94,7 +98,8 @@ def main():
                                     ("one wrist, the whole fencer", 32, "Regular", grey, 80)], 3.0))
     encode(tmp / "watch.mp4", watch_only(sorted(frames.glob("f_*.png")), np.load(watch)["pose"]))
     encode(tmp / "end.mp4", card([("61 mm", 110, "Light", mint, -60),
-                                  ("mean joint error on a take the model never saw", 30, "Regular", grey, 40)], 4.0))
+                                  ("mean joint error on a take the model never saw", 30, "Regular", grey, 40),
+                                  ("average pose: 106 mm", 26, "Regular", (95, 95, 100), 90)], 4.0))
 
     parts = [tmp / "title.mp4", tmp / "watch.mp4", deviation, tmp / "end.mp4"]
     lengths = [float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",

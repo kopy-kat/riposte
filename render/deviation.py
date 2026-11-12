@@ -20,6 +20,7 @@ GOOD, BAD = 0.04, 0.15  # metres: full green at or under GOOD, full red at or ov
 STOPS = np.array([[110, 231, 183], [253, 224, 120], [255, 107, 107]], dtype=float)
 BG = (11, 11, 13)
 ZOOM, LIFT = 0.8, 90
+TEXT_DELAY = 1.0  # render.cut crossfades into this clip over its first second; keep the text out of the fade
 FONT = "/System/Library/Fonts/SFNS.ttf"
 
 
@@ -53,8 +54,8 @@ def main():
         return uv * ZOOM + [K[0, 2], K[1, 2] - LIFT]
 
     W, H = 1920, 1080
-    font = ImageFont.truetype(FONT, 30)
-    small = ImageFont.truetype(FONT, 18)
+    font = ImageFont.truetype(FONT, 44)
+    small = ImageFont.truetype(FONT, 30)
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                             "-r", f"{fps}", "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", out],
                            stdin=subprocess.PIPE)
@@ -74,17 +75,19 @@ def main():
                 x, y = watch2d[j]
                 g.ellipse([x - r, y - r, x + r, y + r], fill=colour(err[k, j]) + (255,))
             img.alpha_composite(layer.resize((W, H), Image.LANCZOS))
+        a = np.clip(((k - start) / fps - TEXT_DELAY) / 0.3, 0, 1)
+        txt = Image.new("RGBA", (W, H))
+        t = ImageDraw.Draw(txt)
         recent = body[max(start, k - int(fps)):k + 1]
         if np.isfinite(recent).any():
-            t = ImageDraw.Draw(img)
             mm = np.nanmean(recent) * 1000
-            t.text((64, H - 64), f"{mm:.0f} mm", font=font, fill=colour(mm / 1000) + (235,), anchor="ls")
-            t.text((64, H - 108), "watch vs video pose", font=small, fill=(255, 255, 255, 140), anchor="ls")
-        t = ImageDraw.Draw(img)
+            t.text((64, H - 64), f"{mm:.0f} mm", font=font, fill=colour(mm / 1000) + (int(235 * a),), anchor="ls")
+            t.text((64, H - 124), "watch vs video pose", font=small, fill=(255, 255, 255, int(150 * a)), anchor="ls")
         for i, (name, rgb) in enumerate([("video pose", (255, 255, 255)), ("Apple Watch", tuple(int(v) for v in STOPS[0]))]):
-            y = H - 64 - 36 * (1 - i)
-            t.line([(W - 260, y - 7), (W - 228, y - 7)], fill=rgb + (200,), width=3)
-            t.text((W - 212, y), name, font=small, fill=(255, 255, 255, 170), anchor="ls")
+            y = H - 64 - 48 * (1 - i)
+            t.line([(W - 330, y - 10), (W - 290, y - 10)], fill=rgb + (int(210 * a),), width=4)
+            t.text((W - 272, y), name, font=small, fill=(255, 255, 255, int(180 * a)), anchor="ls")
+        img.alpha_composite(txt)
         enc.stdin.write(np.asarray(img.convert("RGB")).tobytes())
     enc.stdin.close()
     enc.wait()
