@@ -5,6 +5,7 @@ writes <watch>.watchpose.npz beside the input: the pose, and the blade direction
 fitted model (sample/blade.npz, beside the weights). With --targets (video poses on the same watch-time grid), it
 prints the error, the lunges and thrusts found from the watch against the video's, and the blade's image-angle
 error against the blade detected in the video (frames where it was found), next to a blade along the forearm.
+Without --targets too, it prints each lunge and thrust found from the watch: when, onset to peak, and depth or arm speed.
 """
 
 import argparse
@@ -14,7 +15,7 @@ import numpy as np
 import torch
 
 import model.train as train
-from analysis.moves import WATCH_LUNGE_PEAK, events, label, match
+from analysis.moves import WATCH_LUNGE_PEAK, events, label, match, stance
 from imu.blade_video import image_angle, watch_blade
 from imu.load import load_sensor_logger
 from imu.synth import ELBOW_KP, WRIST_KP
@@ -44,6 +45,19 @@ def main():
     blade = watch_blade(np.load(Path(a.weights).with_name("blade.npz")), a.watch, t, pred)
     np.savez(out, t=t, pose=pred, blade=blade)
     print(out)
+
+    watch = events(pred, label(pred), WATCH_LUNGE_PEAK)
+    st = stance(pred)
+    print("\nmove     at      onset to peak")
+    for e in watch:
+        m, s = divmod((t[e["onset"]] - t[0]), 60)
+        extra = f"stance {st[e['peak']] / np.nanmedian(st):.1f}x guard" if e["kind"] == "lunge" else f"arm {e['speed']:.1f} m/s"
+        print(f"{'lunge' if e['kind'] == 'lunge' else 'thrust':<8} {m:.0f}:{s:04.1f}  {e['duration'] * 1000:4.0f} ms   {extra}")
+    for kind, name in (("lunge", "lunges"), ("extension", "thrusts")):
+        d = [e["duration"] * 1000 for e in watch if e["kind"] == kind]
+        if d:
+            print(f"{len(d)} {name}: median {np.median(d):.0f} ms, fastest {min(d):.0f}, slowest {max(d):.0f}")
+    print()
     if tg is None:
         return
 
@@ -51,7 +65,7 @@ def main():
     mean = np.broadcast_to(ck["mean_pose"].numpy(), true.shape)
     for name, pr in (("watch model", pred), ("average pose", mean)):
         print(f"{name:<14}MPJPE mm  " + "".join(f"{g}: {train.mpjpe(pr, true, valid, j):.0f}  " for g, j in train.GROUPS.items()))
-    video, watch = events(true, label(true)), events(pred, label(pred), WATCH_LUNGE_PEAK)
+    video = events(true, label(true))
     pairs = match(video, watch)
     for kind, name in (("lunge", "lunges"), ("extension", "thrusts")):
         pk = [(e, f) for e, f in pairs if e["kind"] == kind]
