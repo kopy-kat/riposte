@@ -1,10 +1,10 @@
 # riposte
 
-A whole épée fencer in 3D, from an Apple Watch on the weapon wrist. No camera at inference. Built for fencers drilling alone, who have no coach watching their lunges and thrusts.
+From one Apple Watch on the weapon wrist, riposte times each lunge and thrust, points the épée, and reconstructs the whole fencer in 3D. No camera at inference. It's built for fencers drilling alone: the onset-to-peak time of every lunge in a drill set, with no coach watching.
 
-[IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday full-body pose from consumer IMUs. riposte is trained on fencing: its targets come from my own iPhone video, it gets the blade from the watch, and it times lunges and thrusts.
+[IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday full-body pose from consumer IMUs, with no blade or move timing. riposte is trained on fencing, with targets from my own iPhone video.
 
-[riposte.mp4](riposte.mp4): first the watch-only pose, then the same seconds beside the pose from a video the model never saw. White is the video's pose. The watch skeleton is coloured by its distance from it.
+[riposte.mp4](riposte.mp4): the watch-only pose, then the same seconds against the pose from video the model never saw (white), coloured by error.
 
 ## How it works
 
@@ -46,14 +46,15 @@ On a 4-minute take held out from training:
 
 - The retrieval row comes from `model.train`. Cross-validated over the 8 training takes, the model gets 58 mm.
 - Moves found from the watch alone: 13 of 13 lunges (3 false alarms) and 20 of 22 thrusts (4 false alarms). Their median onset is within 33 ms and 67 ms of the video's.
-- `render.deviation` recomputes the error frame by frame against the video and gets 61 mm over the take.
+- `render.deviation` recomputes it frame by frame: 61 mm.
 
 ## What's faked or mocked
 
-- The watch can't see where you stand. The watch-only view holds the pelvis still, and the comparison places it at the video's pelvis.
+Nothing in the pipeline or the numbers is mocked.
 
 ## Limitations
 
+- The watch can't tell where you stand. The pelvis is held still in the watch-only view and placed at the video's pelvis in the comparison.
 - The "ground truth" is SAM 3D Body run on monocular video, not motion capture.
 - The model is offline. The GRU is bidirectional over 2 s windows, so each frame also uses IMU from after it.
 - There is one fencer (me), one room and no opponent.
