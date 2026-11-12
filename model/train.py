@@ -92,13 +92,19 @@ def en_garde(p, hold_s=3.0):
 
 
 def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, rot_deg=15.0, n_test=0, seeds=1,
-             hidden=128, causal=False, save=None):
+             hidden=128, causal=False, save=None, span=None):
     """With n_test, the last n_test takes are the whole validation set and every other take trains in full.
-    save: path to write the trained nets and their input normalisation, for model.predict."""
+    save: path to write the trained nets and their input normalisation, for model.predict.
+    span: (start, length) in minutes; with n_test, train on only that stretch of the training takes laid end to end."""
     if n_test:
         n_train = len(takes) - n_test
         splits = [(windows(0, len(p["t"]), p["valid"]), (0, 0)) if i < n_train else ([], (0, len(p["t"])))
                   for i, p in enumerate(takes)]
+        if span:
+            lo, hi, base = int(span[0] * 60 * RATE), int((span[0] + span[1]) * 60 * RATE), 0
+            for i in range(n_train):
+                splits[i] = ([s for s in splits[i][0] if lo <= base + s and base + s + WIN <= hi], splits[i][1])
+                base += len(takes[i]["t"])
     else:
         splits = [split(p, folds, k) for p in takes]
     items = [(i, s) for i, (tr, _) in enumerate(splits) for s in tr]
@@ -143,7 +149,7 @@ def run_fold(takes, folds, k, epochs, device, seed=0, log=print, held_out=None, 
 def train_net(takes, items, ys, mean_pose, mu_t, sd_t, epochs, device, seed, log, k, rot_deg, hidden, causal):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    net = Net(takes[0]["imu"].shape[1], len(JOINTS), mean_pose, hidden, causal).to(device)
+    net = Net(takes[0]["imu"].shape[1], len(mean_pose), mean_pose, hidden, causal).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-2)
     for ep in range(epochs):
         net.train()
@@ -187,6 +193,8 @@ def main():
     ap.add_argument("--rot", type=float, default=15.0, help="strap-rotation augmentation, degrees")
     ap.add_argument("--seeds", type=int, default=1, help="average this many independently trained models")
     ap.add_argument("--save", help="with --test: write the trained nets here, for model.predict")
+    ap.add_argument("--span", help="with --test: train on only this stretch of the training takes laid end to end, "
+                                   "as start,minutes")
     ap.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     a = ap.parse_args()
     global WIN
@@ -202,6 +210,7 @@ def main():
     kw = dict(held_out=held_out, rot_deg=a.rot, seeds=a.seeds, hidden=a.hidden, causal=a.causal)
     if a.test:
         kw["save"] = a.save
+        kw["span"] = [float(v) for v in a.span.split(",")] if a.span else None
         results = [run_fold(takes, a.folds, 0, a.epochs, a.device, n_test=len(a.test), **kw)]
     else:
         results = [run_fold(takes, a.folds, k, a.epochs, a.device, **kw) for k in range(a.folds)]
