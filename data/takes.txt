@@ -1,0 +1,8 @@
+data/raw/office2/watch,data/processed/office2_video.sam3d.npz,-9.887
+data/raw/office1/watch,data/processed/office1_video.sam3d.npz,-9.332
+data/raw/home0/watch,data/processed/home0_video30.sam3d.npz
+data/raw/home1/watch,data/processed/home1_video30.sam3d.npz
+data/raw/home2/watch,data/processed/home2_video30.sam3d.npz
+data/raw/home3/watch,data/processed/home3_video30.sam3d.npz
+data/raw/home4/watch,data/processed/home4_video30.sam3d.npz
+data/raw/home5/watch,data/processed/home5_video30.sam3d.npz

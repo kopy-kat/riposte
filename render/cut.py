@@ -14,11 +14,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from analysis.moves import events, label
-from render.deviation import FONT, STOPS
+from analysis.moves import WATCH_LUNGE_PEAK, events, label
+from render.deviation import BG, FONT, STOPS
 
 W, H, FPS = 1920, 1080, 30
-BG = (11, 11, 13)
 MINT = STOPS[0].astype(np.uint8)
 FADE = 1.0
 NAME = {"lunge": "Lunge", "extension": "Thrust"}
@@ -65,7 +64,7 @@ def move_at(ev, i):
 
 
 def watch_only(frames, pose):
-    ev = events(pose, label(pose))
+    ev = events(pose, label(pose), WATCH_LUNGE_PEAK)
     small, big, mid = font(26, "Regular"), font(64, "Light"), font(40, "Light")
     mint = tuple(int(v) for v in MINT)
     for path in frames:
@@ -94,7 +93,7 @@ def main():
     encode(tmp / "title.mp4", card([("riposte", 120, "Light", (240, 240, 240), -20),
                                     ("one wrist, the whole fencer", 32, "Regular", grey, 80)], 3.0))
     encode(tmp / "watch.mp4", watch_only(sorted(frames.glob("f_*.png")), np.load(watch)["pose"]))
-    encode(tmp / "end.mp4", card([("64 mm", 110, "Light", mint, -60),
+    encode(tmp / "end.mp4", card([("61 mm", 110, "Light", mint, -60),
                                   ("mean joint error on a take the model never saw", 30, "Regular", grey, 40)], 4.0))
 
     parts = [tmp / "title.mp4", tmp / "watch.mp4", deviation, tmp / "end.mp4"]

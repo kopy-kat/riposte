@@ -1,9 +1,9 @@
-"""The watch-only pose drawn over the video, coloured by how far each bone is from the video's pose.
+"""The watch-only pose beside the video's pose, through the video's camera, coloured by how far each bone is off.
 
     uv run python -m render.deviation data/processed/demo_video30.sam3d.npz data/processed/demo_video30.watchpose.npz \
-        data/raw/demo/video30.mp4 data/processed/deviation.mp4 [start_s end_s]
-The video pose is a white ghost; the watch skeleton gets the video's pelvis, since the watch can't see where
-the fencer stands. Prints the mean per-joint error over the frames drawn.
+        data/processed/deviation.mp4 [start_s end_s]
+No video pixels: the video's pose is a white ghost on black. The watch skeleton gets the video's pelvis, since the
+watch can't see where the fencer stands. Prints the mean per-joint error over the frames drawn.
 """
 
 import subprocess
@@ -18,6 +18,8 @@ from render.prepare import BONES
 SS = 2  # supersampling for antialiased lines
 GOOD, BAD = 0.04, 0.15  # metres: full green at or under GOOD, full red at or over BAD
 STOPS = np.array([[110, 231, 183], [253, 224, 120], [255, 107, 107]], dtype=float)
+BG = (11, 11, 13)
+ZOOM, LIFT = 0.8, 90
 FONT = "/System/Library/Fonts/SFNS.ttf"
 
 
@@ -28,12 +30,12 @@ def colour(err):
 
 
 def main():
-    sam, watch, video, out = sys.argv[1:5]
+    sam, watch, out = sys.argv[1:4]
     d, w = np.load(sam), np.load(watch)
     fps = float(d["fps"])
     K = d["cam_int"].reshape(-1, 3, 3)[0]
     n = len(d["found"])
-    start, end = (int(float(s) * fps) for s in sys.argv[5:7]) if len(sys.argv) > 6 else (0, n)
+    start, end = (int(float(s) * fps) for s in sys.argv[4:6]) if len(sys.argv) > 5 else (0, n)
     end = min(end, n)
 
     true = d["pred_keypoints_3d"][:, JOINTS] + d["pred_cam_t"][:, None]
@@ -46,24 +48,18 @@ def main():
     body = np.where(found, err.mean(1), np.nan)
 
     def project(p):
-        return (p[:, :2] / p[:, 2:]) * [K[0, 0], K[1, 1]] + [K[0, 2], K[1, 2]]
+        # Zoomed out from the video's framing and lifted, so the feet stay in frame in a lunge.
+        uv = (p[:, :2] / p[:, 2:]) * [K[0, 0], K[1, 1]]
+        return uv * ZOOM + [K[0, 2], K[1, 2] - LIFT]
 
     W, H = 1920, 1080
     font = ImageFont.truetype(FONT, 30)
     small = ImageFont.truetype(FONT, 18)
-    dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{start / fps}", "-i", video, "-frames:v", str(end - start),
-                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                             "-r", f"{fps}", "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", out],
                            stdin=subprocess.PIPE)
     for k in range(start, end):
-        buf = dec.stdout.read(W * H * 3)
-        if len(buf) < W * H * 3:
-            break
-        f = np.frombuffer(buf, np.uint8).reshape(H, W, 3).astype(np.float32)
-        grey = f.mean(2, keepdims=True)
-        f = (0.45 * f + 0.55 * grey) * 0.5
-        img = Image.fromarray(f.astype(np.uint8)).convert("RGBA")
+        img = Image.new("RGBA", (W, H), BG + (255,))
         if found[k]:
             layer = Image.new("RGBA", (W * SS, H * SS))
             g = ImageDraw.Draw(layer)
@@ -83,11 +79,15 @@ def main():
             t = ImageDraw.Draw(img)
             mm = np.nanmean(recent) * 1000
             t.text((64, H - 64), f"{mm:.0f} mm", font=font, fill=colour(mm / 1000) + (235,), anchor="ls")
-            t.text((64, H - 108), "deviation", font=small, fill=(255, 255, 255, 140), anchor="ls")
+            t.text((64, H - 108), "watch vs video pose", font=small, fill=(255, 255, 255, 140), anchor="ls")
+        t = ImageDraw.Draw(img)
+        for i, (name, rgb) in enumerate([("video pose", (255, 255, 255)), ("Apple Watch", tuple(int(v) for v in STOPS[0]))]):
+            y = H - 64 - 36 * (1 - i)
+            t.line([(W - 260, y - 7), (W - 228, y - 7)], fill=rgb + (200,), width=3)
+            t.text((W - 212, y), name, font=small, fill=(255, 255, 255, 170), anchor="ls")
         enc.stdin.write(np.asarray(img.convert("RGB")).tobytes())
     enc.stdin.close()
     enc.wait()
-    dec.terminate()
     print(f"{out}  mean per-joint error {np.nanmean(body[start:end]) * 1000:.0f} mm over {np.isfinite(body[start:end]).sum()} frames")
 
 
