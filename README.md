@@ -1,6 +1,8 @@
 # riposte
 
-A whole épée fencer in 3D, from an Apple Watch on the weapon wrist. No camera at inference.
+A whole épée fencer in 3D, from an Apple Watch on the weapon wrist. No camera at inference. Built for fencers drilling alone, who have no coach watching their lunges and thrusts.
+
+[IMUPoser](https://arxiv.org/abs/2304.12518) and [MobilePoser](https://arxiv.org/abs/2504.12492) estimate everyday full-body pose from consumer IMUs. riposte is trained on fencing: its targets come from my own iPhone video, it gets the blade from the watch, and it times lunges and thrusts.
 
 [riposte.mp4](riposte.mp4): first the watch-only pose, then the same seconds drawn over the video it never saw. The white ghost is the video's pose. The watch skeleton is coloured by its distance from the ghost.
 
@@ -41,9 +43,12 @@ On a 4-minute take held out from training:
 ## What's faked or mocked
 
 - The watch can't see where you stand. The watch-only view holds the pelvis still, and the overlay places it at the video's pelvis.
+- The lunge threshold in `analysis/moves.py` was tuned by watching the held-out take.
+
+## Limitations
+
 - The "ground truth" is SAM 3D Body run on monocular video, not motion capture.
 - The model is offline. The GRU is bidirectional over 2 s windows, so each frame also uses IMU from after it.
 - There is one fencer (me), one room and no opponent.
-- The lunge threshold in `analysis/moves.py` was set by watching the held-out take.
 - Thrusts are the weak spot, at 134 mm during full extension.
 - Steps aren't detected.
