@@ -1,7 +1,8 @@
 """SAM 3D Body npz -> point caches + scene json for render/scene.py.
 
     uv run python -m render.prepare data/processed/<take>.sam3d.npz [--hand right] [--watch data/raw/<take>/watch [--offset s]]
-    uv run python -m render.prepare --watch-pose data/processed/<take>.watchpose.npz --watch-only <out dir> [--watch data/raw/<take>/watch]
+    uv run python -m render.prepare --watch-pose data/processed/<take>.watchpose.npz --watch-only <out dir> \
+        --watch data/raw/<take>/watch --frames 5401 6300        # for render/studio.py
 """
 
 import argparse
@@ -24,10 +25,12 @@ TRAIL_FRAMES = 12
 BONES = [(0, 5), (0, 6), (5, 6), (5, 7), (7, 22), (6, 8), (8, 21), (5, 9), (6, 10), (9, 10), (9, 11), (11, 13),
          (10, 12), (12, 14), (13, 15), (13, 17), (14, 18), (14, 20)]
 BONE_M = 0.012
-# Pelvis 4.2 m away, right of centre to clear the captions with room for the blade ahead, nudged up so the
-# feet stay in frame in a lunge.
-WATCH_ONLY_CAM = {"w": 1280, "h": 720, "f": 1100.0, "cx": 680.0, "cy": 320.0, "dist": 4.2}
 BLADE_MODEL = Path(__file__).resolve().parents[1] / "data/processed/blade.npz"
+BODY_MODEL = Path(__file__).resolve().parents[1] / "data/processed/body/body.npz"
+# Studio blade: distance along the axis from the hand and radius, a bell guard then the blade, drawn thicker
+# than steel so it survives a 1080p frame from 5 m.
+BLADE_S, BLADE_R = [0.0, 0.02, 0.04, BLADE_M], [0.06, 0.045, 0.007, 0.004]
+TRAIL_S, TRAIL_N, TRAIL_R = 0.5, 60, 0.012  # seconds of tip path, points along it, radius at the tip
 
 
 def to_blender(p):
@@ -98,33 +101,77 @@ def skeleton_scene(skel):
             "skeleton_faces": [(4 * k, 4 * k + 1, 4 * k + 2, 4 * k + 3) for k in range(len(BONES))]}
 
 
-def watch_only(watch_pose, out, watch=None, hand="right"):
-    """The watch-only pose alone, seen by a fixed virtual camera; nothing from the video. With the watch
-    dir, also the blade from its attitude and the BLADE_MODEL fitted by imu.blade_video.
+def tube(points, radii, sides=6):
+    """(N, K, 3) polylines -> (N, K * sides, 3) rings of the given radii around them, and the quads joining them."""
+    t = np.gradient(points, axis=1)
+    t /= np.linalg.norm(t, axis=-1, keepdims=True) + 1e-9
+    n1 = np.cross(t, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    flat = np.linalg.norm(n1, axis=-1, keepdims=True) < 1e-3
+    n1 = np.where(flat, np.cross(t, np.array([1.0, 0.0, 0.0], dtype=np.float32)), n1)
+    n1 /= np.linalg.norm(n1, axis=-1, keepdims=True) + 1e-9
+    n2 = np.cross(t, n1)
+    ang = np.linspace(0, 2 * np.pi, sides, endpoint=False, dtype=np.float32)
+    ring = np.cos(ang)[:, None] * n1[:, :, None] + np.sin(ang)[:, None] * n2[:, :, None]
+    verts = points[:, :, None] + np.asarray(radii, np.float32)[None, :, None, None] * ring
+    k = points.shape[1]
+    faces = [(i * sides + j, i * sides + (j + 1) % sides, (i + 1) * sides + (j + 1) % sides, (i + 1) * sides + j)
+             for i in range(k - 1) for j in range(sides)]
+    return verts.reshape(len(points), -1, 3).astype(np.float32), faces
 
-    The pose is pelvis-relative in the body frame (right, up, back), so the pelvis stays put. The camera
-    looks along the body's back axis, which puts the hip line (the piste, in guard) across the image.
+
+def watch_only(watch_pose, out, watch, first, last, hand="right"):
+    """The watch-only fencer in a studio scene for render/studio.py: frames first..last (frame N is pose
+    sample N - 1), nothing from the video. The body is render.body's surface on the predicted joints, the
+    blade comes from the watch's attitude and the BLADE_MODEL fitted by imu.blade_video.
+
+    The pose is pelvis-relative in the body frame (right, up, back), so the pelvis stays over one spot; each
+    frame is lowered until the lowest point of the body rests on the floor.
     """
-    w = np.load(watch_pose)
-    pose = fill_gaps(w["pose"].astype(np.float32))
-    # (right, up, back) -> OpenCV (-x, -y, z): a rotation, so the fencer is not mirrored; seen from the side the video was.
-    flip = np.array([-1.0, -1.0, 1.0], dtype=np.float32)
-    joints = pose * flip + np.array([0.0, 0.0, WATCH_ONLY_CAM["dist"]], dtype=np.float32)
-    skel = bone_quads(joints)
-    write_pc2(out / "skeleton.pc2", to_blender(skel), RATE)
-    c = WATCH_ONLY_CAM
-    scene = {"fps": RATE, "frames": len(pose), "fx": c["f"], "fy": c["f"], "cx": c["cx"], "cy": c["cy"],
-             **skeleton_scene(skel)}
-    if watch:
-        from imu.blade_video import watch_blade
-        from imu.synth import WRIST_KP
-        from model.pairs import JOINTS
+    from scipy.interpolate import CubicSpline
+    from scipy.signal import savgol_filter
 
-        axis = watch_blade(np.load(BLADE_MODEL), watch, w["t"], pose, hand).astype(np.float32) * flip
-        # The hand is neither predicted nor drawn, so the blade starts at the wrist: a grip's offset
-        # leaves a visible gap between the arm and the blade.
-        guard = joints[:, JOINTS.index(WRIST_KP[hand])]
-        scene.update(blade_scene(*blade_and_trail(guard, axis, out, RATE)))
+    from imu.blade_video import watch_blade
+    from render.body import dress
+
+    w = np.load(watch_pose)
+    lo = max(first - 1 - int(TRAIL_S * RATE) - 8, 0)
+    full = fill_gaps(w["pose"].astype(np.float32))
+    world = lambda p: np.stack([p[..., 0], -p[..., 2], p[..., 1]], -1)  # (right, up, back) -> Blender's z up
+    model = np.load(BODY_MODEL)
+    verts, knuckle = dress(model, full[lo:last])
+    verts, knuckle = world(verts), world(knuckle)
+    ground = savgol_filter(verts[..., 2].min(1), 9, 2)
+    verts[..., 2] -= ground[:, None]
+    knuckle[:, 2] -= ground
+
+    axis = world(watch_blade(np.load(BLADE_MODEL), watch, w["t"], full, hand).astype(np.float32)[lo:last])
+    axis = savgol_filter(axis, 5, 2, axis=0)
+    axis /= np.linalg.norm(axis, axis=1, keepdims=True)
+    s, r = np.array(BLADE_S, np.float32), BLADE_R
+    blade, blade_faces = tube(knuckle[:, None] + s[None, :, None] * axis[:, None], r)
+
+    # The trail follows a smoothed tip, sampled between frames: at 30 Hz a fast point leaves a polygon.
+    tip = savgol_filter(knuckle + BLADE_M * axis, 7, 2, axis=0)
+    path = CubicSpline(np.arange(len(tip)), tip)
+    k = first - 1 - lo
+    ages = np.linspace(0, TRAIL_S * RATE, TRAIL_N, dtype=np.float32)
+    hist = path(np.clip(np.arange(k, len(tip))[:, None] - ages[None], 0, None)).astype(np.float32)
+    trail, trail_faces = tube(hist, np.linspace(TRAIL_R, 0.002, TRAIL_N))
+
+    fps = float(RATE)
+    write_pc2(out / "body.pc2", verts[k:], fps)
+    write_pc2(out / "blade.pc2", blade[k:], fps)
+    write_pc2(out / "trail.pc2", trail, fps)
+    from model.pairs import JOINTS
+
+    feet = world(full[first - 1:last])
+    reach = (feet[:, JOINTS.index(14)] - feet[:, JOINTS.index(13)])[:, :2].mean(0)  # rear ankle to front: the piste
+    scene = {"fps": fps, "first": first, "frames": last - first + 1,
+             "facing_deg": float(np.degrees(np.arctan2(reach[1], reach[0]))),
+             "body_rest": verts[k].tolist(), "body_faces": model["faces"].astype(int).tolist(),
+             "blade_rest": blade[k].tolist(), "blade_faces": blade_faces,
+             "trail_rest": trail[0].tolist(), "trail_faces": trail_faces,
+             "trail_age": np.repeat(ages / ages[-1], 6).tolist()}
     (out / "scene.json").write_text(json.dumps(scene))
     print(out)
 
@@ -135,15 +182,16 @@ def main():
     ap.add_argument("--hand", default="right", choices=["right", "left"])
     ap.add_argument("--watch", default=None, help="Sensor Logger dir: blade orientation from the watch attitude")
     ap.add_argument("--watch-pose", default=None, help="model.train --out predictions: draw them as a skeleton")
+    ap.add_argument("--frames", type=int, nargs=2, metavar=("FIRST", "LAST"), help="with --watch-only: the frames to prepare")
     ap.add_argument("--video", default=None, help="with --watch: fit the watch-to-blade direction to the blade seen in this video")
     ap.add_argument("--offset", type=float, default=None, help="watch time of video t=0")
     ap.add_argument("--watch-only", default=None, metavar="OUT_DIR",
-                    help="with --watch-pose: render only the watch-only skeleton (and with --watch, the blade), by a fixed camera, into this dir")
+                    help="with --watch-pose, --watch and --frames: the watch-only fencer for render/studio.py, into this dir")
     args = ap.parse_args()
     if args.watch_only:
         out = Path(args.watch_only)
         out.mkdir(parents=True, exist_ok=True)
-        return watch_only(args.watch_pose, out, args.watch, args.hand)
+        return watch_only(args.watch_pose, out, args.watch, *args.frames, args.hand)
 
     d = np.load(args.npz)
     out = Path(args.npz).with_suffix("").with_suffix("")
