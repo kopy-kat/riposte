@@ -41,7 +41,7 @@ On a 4-minute take held out from training:
 | | mean joint error |
 |---|---|
 | watch model | **61 mm** (arm 62, legs 67) |
-| nearest-neighbour retrieval | 87 mm |
+| nearest-neighbour retrieval (`model.train`) | 87 mm |
 | average pose | 106 mm |
 
 - Cross-validated over the 8 training takes, the model gets 58 mm.
@@ -57,7 +57,7 @@ Nothing in the pipeline or the numbers is mocked.
 
 - The watch can't tell where you stand: the pelvis is fixed in the watch-only view and taken from the video in the comparison.
 - The "ground truth" is SAM 3D Body on monocular video, not motion capture.
-- The model is offline: the GRU also sees IMU from after each frame.
+- The model is offline: the GRU also sees IMU after each frame.
 - One fencer (me), one room, no opponent.
 - Thrusts are the weak spot, at 103 mm during full extension.
 - Steps aren't detected.
