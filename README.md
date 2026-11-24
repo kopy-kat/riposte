@@ -1,10 +1,14 @@
 # riposte
 
-Watching yourself is the fastest way to fix a fault, but a camera often can't come with you. riposte is the replay without the camera: from one Apple Watch on the weapon wrist it reconstructs the fencer, points the épée, moves them along the piste and shows faults such as a late arm. You film yourself once to teach it; after that, the watch is enough.
+A 3D replay of my fencing from an Apple Watch.
 
-Single-wrist golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan et al. 2026](https://arxiv.org/abs/2606.22876)) reconstruct the swing but not the club. [IMUPoser](https://arxiv.org/abs/2304.12518), [MobilePoser](https://arxiv.org/abs/2504.12492) and [ArmPoser](https://arxiv.org/abs/2609.08806) estimate everyday pose. None recovers the held implement. riposte does, and its replay shows a late-arm fault.
+I wanted to watch my fencing back, but I usually can't bring a camera. So I tried to get the replay from the watch on my weapon wrist instead. I filmed myself once to train it. After that the watch is enough: it rebuilds my body in 3D, points the épée, moves me along the piste and shows faults like a late arm.
 
-[riposte.mp4](riposte.mp4): narrated slides; the watch-only skeleton alone, over footage, against the video's pose, in 3D.
+Other people have done pose from a single wrist. The golf systems ([Lauer 2025](https://arxiv.org/abs/2506.17505), [Tan et al. 2026](https://arxiv.org/abs/2606.22876)) reconstruct the swing but not the club. [IMUPoser](https://arxiv.org/abs/2304.12518), [MobilePoser](https://arxiv.org/abs/2504.12492) and [ArmPoser](https://arxiv.org/abs/2609.08806) estimate everyday pose. None of them recovers the thing you are holding. riposte does.
+
+https://github.com/user-attachments/assets/76052a86-cf7d-4cf3-8db6-dbf79b1ba246
+
+The video is me talking through slides, then the watch-only skeleton on its own, over the footage, next to the pose from the video, and in 3D. The full-size file is [riposte.mp4](riposte.mp4).
 
 ## How it works
 
